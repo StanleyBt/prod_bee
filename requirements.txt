@@ -1,0 +1,8 @@
+langgraph
+litellm
+weaviate-client
+sentence-transformers
+python-dotenv
+langfuse
+mem0ai
+protobuf==4.23.4
