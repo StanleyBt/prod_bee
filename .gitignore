@@ -1,13 +1,53 @@
-# Python cache and logs
+# Python cache and bytecode
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+
+# Logs
 *.log
 
 # Virtual environments
 .venv/
 env/
 venv/
+venv.bak/
 
+# Environment variables
 .env
-
+.env.*
 .env/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# Data and database files
+data/
+weaviate-data/
+*.db
+*.wal
+*.bloom
+*.cna
+*.secondary.*
+*.commitlog.*
+*.proplengths
+*.jsonl
+
+# Build and distribution directories
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Test and coverage files
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Misc
+.ingest_hashes.json  # Only if you want to ignore this (remove if you want to track it)

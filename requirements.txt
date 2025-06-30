@@ -6,3 +6,4 @@ python-dotenv
 langfuse
 mem0ai
 protobuf==4.23.4
+PyMuPDF
