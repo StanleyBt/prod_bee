@@ -9,6 +9,7 @@ from services.memory_store import store_in_mem0, retrieve_mem0_memories
 from core.config import DEFAULT_MODULE
 from api.lifespan import lifespan
 from tracing import get_langfuse_client
+from fastapi import Query
 
 logger = logging.getLogger(__name__)
 
@@ -96,12 +97,24 @@ def create_rag_flow():
         ]) if memories else ""
 
         prompt = (
-            "You are an AI assistant for employee onboarding. Use the context and conversation history to answer.\n\n"
-            f"Previous conversation:\n{memory_str}\n\n"
-            f"Context:\n{state.get('context', '')}\n\n"
-            f"Question: {user_input}\n"
-            "Answer:"
+            "You are a smart, friendly, and professional AI assistant built for a modern SaaS platform. "
+            "Your job is to help users across different modules of the platform.\n\n"
+            "Instructions:\n"
+            "- Understand the user's intent using context and conversation history.\n"
+            "- Respond clearly and concisely using markdown formatting — include bullet points, numbered steps, or headings if useful.\n"
+            "- Avoid overwhelming users — provide just enough detail to address their current need. If the user asks a narrow question, do not give a full process dump.\n"
+            "- Adapt your tone to be professional yet approachable.\n"
+            "- Respect the user`s role (e.g., employee, manager, vendor, HR) to customize instructions.\n"
+            "- Keep responses relevant — don't repeat earlier answers unless needed for clarity.\n"
+            "- Support any module (not just onboarding) — your responses should be modular and context-aware.\n"
+            "- End each message with a friendly check-in like: 'Would you like help with anything else?' or 'Let me know if you'd like to continue to the next step 😊'.\n\n"
+            f"User Role (if known): {state.get('role', 'unknown')}\n"
+            f"Module Context (if applicable): {state.get('context', '')}\n"
+            f"Conversation History:\n{memory_str}\n\n"
+            f"User Input:\n{user_input}\n\n"
+            "Respond helpfully and clearly below:"
         )
+
 
         if langfuse:
             with langfuse.start_as_current_span(name="LLMGeneration") as span:
@@ -168,3 +181,49 @@ async def query_rag(request: QueryRequest):
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.get("/welcome")
+async def welcome(module: Optional[str] = Query(None, description="Module name")):
+    # Module-specific welcome messages
+    messages = {
+        "Onboarding": "👋 Hi there! I'm here to help you with onboarding. You can ask a question or explore common topics to get started.",
+        "Attendance": "👋 Hi there! I'm here to help you with attendance management. You can ask a question or explore common topics to get started.",
+        "Payroll": "👋 Hi there! I'm here to help you with payroll services. You can ask a question or explore common topics to get started.",
+        # Add other modules as needed
+    }
+    
+    # Module-specific suggested questions
+    suggestions = {
+        "Onboarding": [
+            "How do I onboard an employee with the mobile app?",
+            "What do I need before starting mobile onboarding?",
+            "How do I complete web onboarding after mobile onboarding?",
+            "Which details and documents are needed in web onboarding?",
+            "How do I track the onboarding status?"
+        ],
+        "Attendance": [
+            "How do I mark daily attendance?",
+            "How do I request time off?",
+            "How can I view my attendance history?",
+            "Who do I contact for attendance corrections?"
+        ],
+        "Payroll": [
+            "When will I receive my salary?",
+            "How do I view my payslips?",
+            "How do I update my bank details?",
+            "Who handles payroll queries?"
+        ]
+    }
+    
+    # Default message if module not recognized
+    default_message = "Welcome! Here are some suggestions to get started."
+    
+    return {
+        "message": messages.get(module, default_message),
+        "suggestions": suggestions.get(module, [
+            "How do I get started?",
+            "Where can I find help resources?",
+            "Who do I contact for support?"
+        ])
+    }

@@ -25,6 +25,7 @@ AZURE_EMBEDDING_API_BASE = get_env_var("AZURE_EMBEDDING_API_BASE")
 AZURE_EMBEDDING_API_VERSION = get_env_var("AZURE_EMBEDDING_API_VERSION", required=False, default="2023-05-15")
 AZURE_EMBEDDING_DEPLOYMENT_NAME = get_env_var("AZURE_EMBEDDING_DEPLOYMENT_NAME")
 
+
 # Weaviate Settings
 WEAVIATE_URL = get_env_var("WEAVIATE_URL", required=False, default="http://localhost:8080")
 WEAVIATE_COLLECTION_NAME = get_env_var("WEAVIATE_COLLECTION_NAME", required=False, default="Documents")

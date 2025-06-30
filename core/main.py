@@ -5,13 +5,11 @@ import uvicorn
 import sys
 from pathlib import Path
 
-# Add the project root to the Python path to ensure imports work correctly
-# This is a common practice for runnable scripts within a larger package structure.
-# Assuming 'prod-bee' is the root, and this file is 'prod-bee/core/main.py'
+
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from api.app import app # Import the FastAPI app instance from api/app.py
+from api.app import app 
 from core.config import (
     DEFAULT_MODULE,
     DELETE_COLLECTION_ON_INGEST,
