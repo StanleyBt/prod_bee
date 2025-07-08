@@ -51,6 +51,12 @@ def create_rag_flow():
         module = state.get("module") or DEFAULT_MODULE
         user_input = state["input"]
 
+        def preprocess_context(chunks: List[str], max_chars: int = 1000) -> str:
+            combined = " ".join(chunks)
+            if len(combined) > max_chars:
+                combined = combined[:max_chars] + "..."
+            return combined
+
         if langfuse:
             with langfuse.start_as_current_span(name="Retriever") as span:
                 span.update(input={
@@ -65,8 +71,8 @@ def create_rag_flow():
                         module=module,
                         top_k=3
                     )
-                    context = "\n\n".join(result) if result else "No context found"
-                    state["context"] = context
+                    context_summary = preprocess_context(result)
+                    state["context"] = context_summary if context_summary else "No context found"
                     span.update(output={"result_count": len(result) if result else 0})
                 except Exception as e:
                     span.update(exception=e)
@@ -80,10 +86,12 @@ def create_rag_flow():
                     module=module,
                     top_k=3
                 )
-                state["context"] = "\n\n".join(result) if result else "No context found"
+                context_summary = preprocess_context(result)
+                state["context"] = context_summary if context_summary else "No context found"
             except Exception:
                 state["context"] = "Retrieval error"
             return state
+
 
     def llm_node(state: dict) -> dict:
         tenant_id = state.get("tenant_id")
@@ -98,7 +106,7 @@ def create_rag_flow():
 
         prompt = (
             "You are a smart, friendly, and professional AI assistant built for a modern SaaS platform. "
-            "Your job is to help users across different modules of the platform.\n\n"
+            "Your job is to help users"
             "Instructions:\n"
             "- Understand the user's intent using context and conversation history.\n"
             "- Respond clearly and concisely using markdown formatting — include bullet points, numbered steps, or headings if useful.\n"
@@ -106,7 +114,9 @@ def create_rag_flow():
             "- Adapt your tone to be professional yet approachable.\n"
             "- Respect the user`s role (e.g., employee, manager, vendor, HR) to customize instructions.\n"
             "- Keep responses relevant — don't repeat earlier answers unless needed for clarity.\n"
-            "- Support any module (not just onboarding) — your responses should be modular and context-aware.\n"
+            "- your responses should be modular and context-aware.\n"
+            "- IMPORTANT :If the module context does not contain relevant information, please inform the user rather than guessing.\n"
+            "- Focus your responses strictly on the user's selected module and avoid discussing other modules.\n"
             "- End each message with a friendly check-in like: 'Would you like help with anything else?' or 'Let me know if you'd like to continue to the next step 😊'.\n\n"
             f"User Role (if known): {state.get('role', 'unknown')}\n"
             f"Module Context (if applicable): {state.get('context', '')}\n"

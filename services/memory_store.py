@@ -75,14 +75,6 @@ def _get_memory_key(tenant_id: str, session_id: Optional[str] = None, module: Op
     module = module if module is not None else DEFAULT_MODULE
     return f"{tenant_id}:{module}:{session_id}"
 
-def _get_session_state_key(tenant_id: str, session_id: Optional[str] = None, module: Optional[str] = None) -> str:
-    """
-    Generates a unique key for session state.
-    """
-    session_id = session_id if session_id is not None else DEFAULT_SESSION_ID
-    module = module if module is not None else DEFAULT_MODULE
-    return f"session_state:{tenant_id}:{module}:{session_id}"
-
 def store_in_mem0(
     tenant_id: str,
     user_input: str,
@@ -142,53 +134,3 @@ def retrieve_mem0_memories(
         logger.error(f"Failed to retrieve memories for key '{mem_key}': {e}")
         return []
 
-def get_session_state(tenant_id: str, session_id: Optional[str] = None, module: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Retrieve session state from Mem0 by tenant_id, session_id, and module.
-    Uses client-side filtering for robust retrieval.
-    """
-    if not memory_client:
-        logger.warning("Mem0 not available for session state retrieval")
-        return {}
-
-    state_key = _get_session_state_key(tenant_id, session_id, module)
-    try:
-        # Get all memories for this session
-        all_memories = memory_client.get_all(user_id=session_id or DEFAULT_SESSION_ID)
-        memories = all_memories.get("results", [])
-        
-        # Client-side filtering for session state
-        for memory in memories:
-            if memory.get("metadata", {}).get("key") == state_key:
-                return memory.get("metadata", {}).get("state", {})
-        return {}
-    except Exception as e:
-        logger.error(f"Failed to retrieve session state for key '{state_key}': {e}")
-        return {}
-
-def set_session_state(tenant_id: str, state: Dict[str, Any], session_id: Optional[str] = None, module: Optional[str] = None) -> None:
-    """
-    Store session state in Mem0 by tenant_id, session_id, and module.
-    Uses metadata for session state storage.
-    """
-    if not memory_client:
-        logger.warning("Mem0 not available for session state storage")
-        return
-
-    state_key = _get_session_state_key(tenant_id, session_id, module)
-    try:
-        # Delete previous state (to avoid duplicates)
-        all_memories = memory_client.get_all(user_id=session_id or DEFAULT_SESSION_ID)
-        for memory in all_memories.get("results", []):
-            if memory.get("metadata", {}).get("key") == state_key:
-                memory_client.delete(memory_id=memory["id"])
-        
-        # Store new state
-        memory_client.add(
-            memory="",  # No memory text needed
-            user_id=session_id or DEFAULT_SESSION_ID,
-            metadata={"key": state_key, "state": state}
-        )
-        logger.info(f"Stored session state for key: {state_key}")
-    except Exception as e:
-        logger.error(f"Failed to store session state for key '{state_key}': {e}")
