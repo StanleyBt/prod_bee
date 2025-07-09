@@ -28,7 +28,7 @@ AZURE_EMBEDDING_DEPLOYMENT_NAME = get_env_var("AZURE_EMBEDDING_DEPLOYMENT_NAME")
 
 # Weaviate Settings
 WEAVIATE_URL = get_env_var("WEAVIATE_URL", required=False, default="http://localhost:8080")
-WEAVIATE_COLLECTION_NAME = get_env_var("WEAVIATE_COLLECTION_NAME", required=False, default="Documents")
+WEAVIATE_COLLECTION_NAME = get_env_var("WEAVIATE_COLLECTION_NAME", required=False, default="multi_tenant_collection")
 
 # Mem0 Settings (optional)
 MEM0_CLUSTER_URL = get_env_var("MEM0_CLUSTER_URL", required=False, default="http://localhost:8080")

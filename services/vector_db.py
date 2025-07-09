@@ -1,7 +1,8 @@
 import logging
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Optional
 import weaviate
 from weaviate.classes.query import Filter
+from weaviate.classes.config import Configure, Property, DataType  # ✅ Correct import
 from core.config import WEAVIATE_URL, WEAVIATE_COLLECTION_NAME
 import openai
 from core.config import (
@@ -17,7 +18,6 @@ weaviate_client: Optional[weaviate.Client] = None
 collection_name = WEAVIATE_COLLECTION_NAME
 
 def initialize_weaviate() -> bool:
-    """Initialize the Weaviate client. Returns True if successful."""
     global weaviate_client
     try:
         weaviate_client = weaviate.connect_to_local()
@@ -33,7 +33,6 @@ def initialize_weaviate() -> bool:
         return False
 
 def get_openai_embedding(text: str) -> Optional[List[float]]:
-    """Generate an embedding for the given text using Azure OpenAI."""
     try:
         if not AZURE_EMBEDDING_API_KEY or not AZURE_EMBEDDING_API_BASE or not AZURE_EMBEDDING_DEPLOYMENT_NAME:
             logger.error("Azure embedding configuration is missing")
@@ -54,7 +53,6 @@ def get_openai_embedding(text: str) -> Optional[List[float]]:
         return None
 
 def collection_exists() -> bool:
-    """Check if the collection exists in Weaviate."""
     if weaviate_client:
         try:
             return weaviate_client.collections.exists(collection_name)
@@ -63,7 +61,6 @@ def collection_exists() -> bool:
     return False
 
 def create_collection_schema() -> bool:
-    """Create the collection schema if it does not exist."""
     global weaviate_client
     if not weaviate_client:
         logger.error("Weaviate client not initialized")
@@ -72,15 +69,19 @@ def create_collection_schema() -> bool:
         if not weaviate_client.collections.exists(collection_name):
             weaviate_client.collections.create(
                 name=collection_name,
+                multi_tenancy_config=Configure.multi_tenancy(
+                    enabled=True,
+                    auto_tenant_creation=True
+                ),
                 properties=[
-                    {"name": "tenant_id", "dataType": ["text"]},
-                    {"name": "module", "dataType": ["text"]},
-                    {"name": "document_name", "dataType": ["text"]},
-                    {"name": "text", "dataType": ["text"]}
+                    Property(name="tenant_id", data_type=DataType.TEXT),
+                    Property(name="module", data_type=DataType.TEXT),
+                    Property(name="document_name", data_type=DataType.TEXT),
+                    Property(name="text", data_type=DataType.TEXT),
                 ],
-                vectorizer_config=weaviate.configure.Vectorizer.none()
+                vectorizer_config=None
             )
-            logger.info(f"Collection '{collection_name}' created.")
+            logger.info(f"Collection '{collection_name}' created with multi-tenancy enabled.")
         else:
             logger.info(f"Collection '{collection_name}' already exists.")
         return True
@@ -89,7 +90,6 @@ def create_collection_schema() -> bool:
         return False
 
 def store_chunks_batch(chunks: List[Dict[str, str]]) -> None:
-    """Store a batch of chunks in Weaviate."""
     global weaviate_client
     if not weaviate_client:
         logger.warning("Weaviate not available for storage")
@@ -112,7 +112,8 @@ def store_chunks_batch(chunks: List[Dict[str, str]]) -> None:
                 logger.error("Failed to get embedding for chunk")
                 continue
 
-            collection.data.insert(
+            tenant_collection = collection.with_tenant(tenant_id)
+            tenant_collection.data.insert(
                 properties={
                     "tenant_id": tenant_id,
                     "module": module,
@@ -126,11 +127,10 @@ def store_chunks_batch(chunks: List[Dict[str, str]]) -> None:
         logger.error(f"Weaviate batch insert failed: {e}")
 
 def get_available_documents(tenant_id: str, module: str) -> List[Dict[str, str]]:
-    """Return available documents for the given tenant and module."""
     if not weaviate_client:
         logger.warning("Weaviate not available for document listing")
         return []
-    
+
     try:
         collection = weaviate_client.collections.get(collection_name)
         result = collection.aggregate.over_properties(["document_name"]) \
@@ -143,7 +143,7 @@ def get_available_documents(tenant_id: str, module: str) -> List[Dict[str, str]]
             }) \
             .with_fields("document_name {count}") \
             .do()
-        
+
         docs = []
         for agg in result.get("data", {}).get("Aggregate", {}).get(collection_name, []):
             doc_name = agg.get("document_name")
@@ -160,10 +160,6 @@ def retriever_tool(
     module: str,
     top_k: int = 3
 ) -> List[str]:
-    """
-    Retrieve relevant chunks based on query, tenant, and module.
-    Returns a list of text chunks (no document selection or ambiguity handling).
-    """
     global weaviate_client
     if not weaviate_client:
         logger.error("Weaviate client not connected")
@@ -179,7 +175,7 @@ def retriever_tool(
         filters = filters & Filter.by_property("module").equal(module)
 
         collection = weaviate_client.collections.get(collection_name)
-        results = collection.query.near_vector(
+        results = collection.with_tenant(tenant_id).query.near_vector(
             near_vector=query_embedding,
             limit=top_k,
             filters=filters
@@ -193,19 +189,7 @@ def retriever_tool(
         logger.error(f"Retriever query failed: {e}", exc_info=True)
         return []
 
-def delete_collection() -> None:
-    """Delete the collection from Weaviate."""
-    global weaviate_client
-    if weaviate_client:
-        try:
-            if weaviate_client.collections.exists(collection_name):
-                weaviate_client.collections.delete(collection_name)
-                logger.info(f"Collection '{collection_name}' deleted.")
-        except Exception as e:
-            logger.error(f"Failed to delete collection: {e}")
-
 def close_weaviate() -> None:
-    """Close the Weaviate client."""
     global weaviate_client
     if weaviate_client:
         try:
@@ -213,3 +197,23 @@ def close_weaviate() -> None:
             logger.info("Weaviate client closed.")
         except Exception as e:
             logger.error(f"Weaviate close failed: {e}")
+
+def delete_collection() -> None:
+    """
+    Delete all collections from Weaviate to start fresh.
+    """
+    global weaviate_client
+    if not weaviate_client:
+        logger.error("Weaviate client not initialized")
+        return
+
+    try:
+        schema = weaviate_client.schema.get()
+        classes = schema.get("classes", [])
+        for cls in classes:
+            class_name = cls.get("class")
+            logger.info(f"Deleting collection '{class_name}'")
+            weaviate_client.collections.delete(class_name)
+        logger.info("All collections deleted.")
+    except Exception as e:
+        logger.error(f"Failed to delete collections: {e}")
