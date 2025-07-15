@@ -52,7 +52,7 @@ def initialize_mem0_service() -> bool:
                 }
             },
             "llm": {
-                "provider": "azure_openai",
+                "provider": "azure_openai_structured",
                 "config": {
                     "model": AZURE_DEPLOYMENT_NAME,
                     "temperature": 0.1,

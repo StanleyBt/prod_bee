@@ -19,8 +19,6 @@ logger = logging.getLogger(__name__)
 # Global client
 weaviate_client: Optional[weaviate.WeaviateClient] = None
 
-# Remove in-memory fallback storage for memory only
-# in_memory_storage: Dict[str, List[Dict]] = defaultdict(list)
 
 def initialize_per_tenant_storage() -> bool:
     """
