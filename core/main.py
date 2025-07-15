@@ -3,8 +3,12 @@
 import logging
 import uvicorn
 import sys
+import warnings
 from pathlib import Path
 
+# Suppress OpenTelemetry context warnings
+warnings.filterwarnings("ignore", message=".*was created in a different Context.*")
+warnings.filterwarnings("ignore", message=".*Failed to detach context.*")
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -15,14 +19,12 @@ from core.config import (
     DELETE_COLLECTION_ON_INGEST,
     WEAVIATE_COLLECTION_NAME,
 )
-from services.vector_db import (
-    initialize_weaviate,
-    create_collection_schema,
-    delete_collection,
-    collection_exists,
+from services.per_tenant_storage import (
+    initialize_per_tenant_storage,
+    list_tenant_collections,
 )
+
 from services.llm import test_llm_connection # To test LLM connection before starting
-from services.memory_store import initialize_mem0 # To test Mem0 connection before starting
 from core.ingestion import ingest_all_documents # The actual ingestion logic
 
 # Basic logging setup for the main script
@@ -47,31 +49,26 @@ def pre_flight_checks_and_ingestion():
         # Depending on criticality, you might want to exit here
         # sys.exit(1)
 
-    # Initialize Weaviate for schema management and potential ingestion
-    weaviate_ready = initialize_weaviate()
-    if not weaviate_ready:
-        logger.error("Weaviate not ready. Data ingestion and retrieval will fail.")
-        # sys.exit(1) # Consider exiting if Weaviate is absolutely essential
+    # Initialize per-tenant storage for schema management and potential ingestion
+    # Note: This is a temporary initialization for ingestion only
+    # The main service initialization happens in the FastAPI lifespan
+    storage_ready = initialize_per_tenant_storage()
+    if not storage_ready:
+        logger.error("Per-tenant storage not ready. Data ingestion and retrieval will fail.")
+        # sys.exit(1) # Consider exiting if storage is absolutely essential
 
-    # Initialize Mem0 client (only if it needs a separate initialization from lifespan)
-    # Note: lifespan already initializes Mem0, this is more for a pre-check if needed.
-    mem0_ready = initialize_mem0()
-    if not mem0_ready:
-        logger.warning("Mem0 memory store not ready. Conversation history might not be stored/retrieved.")
+    # Memory storage is handled by per-tenant storage
+    if not storage_ready:
+        logger.warning("Storage not ready. Conversation memory and document retrieval may fail.")
 
-    # Manage Weaviate collection schema and trigger ingestion
-    if weaviate_ready:
-        if DELETE_COLLECTION_ON_INGEST:
-            logger.info(f"Deleting existing Weaviate collection '{WEAVIATE_COLLECTION_NAME}' as per config...")
-            delete_collection()
-            logger.info(f"Collection '{WEAVIATE_COLLECTION_NAME}' deleted.")
-
-        if not collection_exists():
-            logger.info(f"Collection '{WEAVIATE_COLLECTION_NAME}' does not exist, creating schema...")
-            create_collection_schema()
-            logger.info(f"Collection '{WEAVIATE_COLLECTION_NAME}' schema created.")
+    # Manage per-tenant collections and trigger ingestion
+    if storage_ready:
+        # List existing collections for info
+        existing_collections = list_tenant_collections()
+        if existing_collections:
+            logger.info(f"Found existing tenant collections: {existing_collections}")
         else:
-            logger.info(f"Collection '{WEAVIATE_COLLECTION_NAME}' already exists.")
+            logger.info("No existing tenant collections found. New collections will be created during ingestion.")
 
         # Trigger data ingestion
         logger.info("Starting data ingestion process (if new/changed files are detected)...")
@@ -80,7 +77,11 @@ def pre_flight_checks_and_ingestion():
         ingest_all_documents()
         logger.info("Initial data ingestion process completed.")
     else:
-        logger.warning("Skipping data ingestion as Weaviate is not initialized.")
+        logger.warning("Skipping data ingestion as per-tenant storage is not initialized.")
+
+    # Close the temporary storage connection used for ingestion
+    from services.per_tenant_storage import close_per_tenant_storage
+    close_per_tenant_storage()
 
     logger.info("Pre-flight checks and initial data setup complete.")
 

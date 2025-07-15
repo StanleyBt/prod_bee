@@ -19,11 +19,14 @@ AZURE_API_BASE = get_env_var("AZURE_OPENAI_API_BASE")
 AZURE_API_VERSION = get_env_var("AZURE_API_VERSION", required=False, default="2025-01-01-preview")
 AZURE_DEPLOYMENT_NAME = get_env_var("AZURE_OPENAI_DEPLOYMENT_NAME")
 
+
+
 # Azure OpenAI Embedding Model Settings
-AZURE_EMBEDDING_API_KEY = get_env_var("AZURE_EMBEDDING_API_KEY")
-AZURE_EMBEDDING_API_BASE = get_env_var("AZURE_EMBEDDING_API_BASE")
+# Use the same API key and base for embeddings if not separately configured
+AZURE_EMBEDDING_API_KEY = get_env_var("AZURE_EMBEDDING_API_KEY", required=False) or AZURE_API_KEY
+AZURE_EMBEDDING_API_BASE = get_env_var("AZURE_EMBEDDING_API_BASE", required=False) or AZURE_API_BASE
 AZURE_EMBEDDING_API_VERSION = get_env_var("AZURE_EMBEDDING_API_VERSION", required=False, default="2023-05-15")
-AZURE_EMBEDDING_DEPLOYMENT_NAME = get_env_var("AZURE_EMBEDDING_DEPLOYMENT_NAME")
+AZURE_EMBEDDING_DEPLOYMENT_NAME = get_env_var("AZURE_EMBEDDING_DEPLOYMENT_NAME", required=False) or AZURE_DEPLOYMENT_NAME
 
 
 # Weaviate Settings
@@ -35,11 +38,11 @@ MEM0_CLUSTER_URL = get_env_var("MEM0_CLUSTER_URL", required=False, default="http
 MEM0_COLLECTION_NAME = get_env_var("MEM0_COLLECTION_NAME", required=False, default="Mem0Memory")
 
 # Other configurable constants
-DEFAULT_CHUNK_SIZE = int(get_env_var("DEFAULT_CHUNK_SIZE", required=False, default="500"))
-DEFAULT_CHUNK_OVERLAP = int(get_env_var("DEFAULT_CHUNK_OVERLAP", required=False, default="50"))
+DEFAULT_CHUNK_SIZE = int(get_env_var("DEFAULT_CHUNK_SIZE", required=False, default="500") or "500")
+DEFAULT_CHUNK_OVERLAP = int(get_env_var("DEFAULT_CHUNK_OVERLAP", required=False, default="50") or "50")
 
 # Add any other config variables here as needed
 
 DEFAULT_MODULE = "others"
-
+DEFAULT_SESSION_ID = "default_session"
 DELETE_COLLECTION_ON_INGEST = False

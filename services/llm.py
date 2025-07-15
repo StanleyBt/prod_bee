@@ -21,36 +21,60 @@ def test_llm_connection():
             api_base=AZURE_API_BASE,
             api_version=AZURE_API_VERSION,
         )
-        logger.info(f"LLM response: {resp['choices'][0]['message']['content']}")
+        # Access response content safely
+        try:
+            content = resp.choices[0].message.content
+        except (AttributeError, IndexError):
+            content = str(resp)
+        logger.info(f"LLM response: {content}")
         return True
     except Exception as e:
         logger.error(f"LLM call failed: {e}")
         return False
 
 def generate_llm_response(prompt: str, span=None):
-    """
-    Generator that yields tokens from Azure OpenAI streaming API via litellm.
-    """
+    """Generate a response from Azure OpenAI LLM via litellm."""
     try:
-        # Enable streaming by setting stream=True
-        response_stream = litellm.completion(
+        resp = litellm.completion(
             model=f"azure/{AZURE_DEPLOYMENT_NAME}",
             messages=[{"role": "user", "content": prompt}],
             api_key=AZURE_API_KEY,
             api_base=AZURE_API_BASE,
             api_version=AZURE_API_VERSION,
-            stream=True  # Enable streaming
         )
-        for chunk in response_stream:
-            # Extract content from chunk (adapt based on litellm's streaming format)
-            content = chunk.get("choices", [{}])[0].get("delta", {}).get("content")
-            if content:
-                yield content
-    except Exception as e:
-        logger.error(f"LLM streaming error: {e}")
+        
+        # Extract response content safely
+        try:
+            response_text = resp.choices[0].message.content
+        except (AttributeError, IndexError):
+            # Fallback to string conversion
+            response_text = str(resp)
+        
+        # Update span with basic metrics if available
         if span:
             try:
-                span.update(metadata={"llm_error": str(e)})
+                span.update(output={
+                    "model": AZURE_DEPLOYMENT_NAME,
+                    "response_length": len(response_text) if response_text else 0,
+                    "provider": "azure_openai"
+                })
+            except Exception as e:
+                logger.warning(f"Failed to update span with LLM metrics: {e}")
+        
+        logger.info(f"LLM response: {response_text}")
+        return response_text
+                
+    except Exception as e:
+        logger.error(f"LLM call error: {e}")
+        if span:
+            try:
+                span.update(exception=e)
+                span.update(output={
+                    "status": "failed",
+                    "error": str(e),
+                    "model": AZURE_DEPLOYMENT_NAME,
+                    "provider": "azure_openai"
+                })
             except Exception:
                 pass
-        yield "[ERROR: LLM streaming failed]"
+        return "[ERROR: LLM call failed]"

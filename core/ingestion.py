@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict
 
 from utils.pdf_processing import extract_chunks_from_pdf
-from services.vector_db import store_chunks_batch
+from services.per_tenant_storage import store_document_chunks, initialize_per_tenant_storage
 
 import warnings
 warnings.filterwarnings("ignore", message="builtin type swigvarlink has no __module__ attribute")
@@ -46,6 +46,11 @@ def ingest_all_documents(base_path: str = "data") -> None:
     Recursively ingest all PDF documents under the base_path.
     Skips files that have not changed based on SHA256 hash.
     """
+    # Initialize per-tenant storage for ingestion
+    if not initialize_per_tenant_storage():
+        logger.error("Failed to initialize per-tenant storage for ingestion.")
+        return
+
     base_dir = Path(base_path)
     if not base_dir.exists():
         logger.error(f"Data directory {base_path} does not exist.")
@@ -86,13 +91,13 @@ def ingest_all_documents(base_path: str = "data") -> None:
                 logger.info(f"Ingesting file: {rel_path}")
                 chunks = extract_chunks_from_pdf(str(pdf_file))
                 chunk_objs = [{
-                    "text": chunk,
+                    "content": chunk,
                     "tenant_id": tenant_id,
                     "module": module,
                     "document_name": pdf_file.stem
                 } for chunk in chunks]
 
-                store_chunks_batch(chunk_objs)
+                store_document_chunks(tenant_id, chunk_objs, module)
                 updated_hashes[rel_path] = current_hash
                 any_files_ingested = True
 

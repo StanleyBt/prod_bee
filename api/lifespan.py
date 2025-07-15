@@ -4,8 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
-from services.vector_db import initialize_weaviate, close_weaviate
-from services.memory_store import initialize_mem0
+from services.per_tenant_storage import initialize_per_tenant_storage, close_per_tenant_storage
 
 logger = logging.getLogger(__name__)
 
@@ -13,40 +12,34 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """
     Handles startup and shutdown events for the FastAPI application.
-    Initializes Weaviate and Mem0 services.
+    Initializes per-tenant storage which handles both document chunks and memory storage.
+    Note: This will create fresh connections even if they were closed by main.py pre-flight checks.
     """
     logger.info("Application lifespan startup: Initializing services...")
-    weaviate_ready = False
-    mem0_ready = False
-
+    
+    # Initialize per-tenant storage (handles both document chunks and memory storage)
     try:
-        weaviate_ready = initialize_weaviate()
-        if not weaviate_ready:
-            logger.error("Failed to initialize Weaviate vector DB.")
+        storage_ready = initialize_per_tenant_storage()
+        if storage_ready:
+            logger.info("✓ Per-tenant storage initialized successfully (includes memory storage).")
+        else:
+            logger.error("❌ Failed to initialize per-tenant storage.")
     except Exception as e:
-        logger.error(f"Error during Weaviate initialization: {e}")
-
-    try:
-        mem0_ready = initialize_mem0()
-        if not mem0_ready:
-            logger.error("Failed to initialize Mem0 memory store.")
-    except Exception as e:
-        logger.error(f"Error during Mem0 initialization: {e}")
-
-    if weaviate_ready and mem0_ready:
-        logger.info("All services initialized successfully.")
-    else:
-        logger.warning("Some services failed to initialize. Application might not function correctly.")
+        logger.error(f"❌ Error during per-tenant storage initialization: {e}")
+        storage_ready = False
 
     yield # Application runs here
 
     logger.info("Application lifespan shutdown: Closing services...")
+    
+    # Close per-tenant storage
     try:
-        close_weaviate()
-        logger.info("Weaviate connection closed.")
+        close_per_tenant_storage()
+        logger.info("✓ Per-tenant storage connection closed.")
     except Exception as e:
-        logger.error(f"Error during Weaviate shutdown: {e}")
+        logger.error(f"❌ Error during per-tenant storage shutdown: {e}")
 
-    # No explicit close for Mem0Client, as it manages its own connections.
+    # Memory cleanup is handled by per-tenant storage
+
     logger.info("Application shutdown complete.")
 

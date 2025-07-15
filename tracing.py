@@ -1,6 +1,7 @@
 # tracing.py
 
 import logging
+import os
 from langfuse import get_client
 
 logger = logging.getLogger(__name__)
@@ -10,6 +11,12 @@ _langfuse_client = None
 def get_langfuse_client():
     """Initializes and returns the Langfuse client (singleton)."""
     global _langfuse_client
+    
+    # Check if tracing is disabled via environment variable
+    if os.getenv("DISABLE_TRACING", "false").lower() == "true":
+        logger.info("Tracing disabled via DISABLE_TRACING environment variable")
+        return None
+    
     if _langfuse_client is not None:
         return _langfuse_client
     try:
