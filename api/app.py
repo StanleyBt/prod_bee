@@ -105,6 +105,13 @@ def create_rag_flow():
                         module=module,
                         top_k=3
                     )
+                    
+                    # --- DEBUG: Print retrieved chunks content ---
+                    logger.info(f"🔍 DEBUG: Retrieved {len(result)} chunks for query: '{user_input}' in module: {module}")
+                    for i, chunk in enumerate(result):
+                        logger.info(f"🔍 DEBUG: Chunk {i+1}: {chunk[:200]}...")
+                    # --- END DEBUG ---
+                    
                     context_summary = preprocess_context(result)
                     state["context"] = context_summary if context_summary else "No context found"
                     
@@ -135,6 +142,13 @@ def create_rag_flow():
                     module=module,
                     top_k=3
                 )
+                
+                # --- DEBUG: Print retrieved chunks content ---
+                logger.info(f"🔍 DEBUG: Retrieved {len(result)} chunks for query: '{user_input}' in module: {module}")
+                for i, chunk in enumerate(result):
+                    logger.info(f"🔍 DEBUG: Chunk {i+1}: {chunk[:200]}...")
+                # --- END DEBUG ---
+                
                 context_summary = preprocess_context(result)
                 state["context"] = context_summary if context_summary else "No context found"
             except Exception:
@@ -233,6 +247,13 @@ def build_prompt(state: dict, user_input: str) -> str:
     else:
         logger.info("No conversation history found")
 
+    # --- PROMPT-ONLY RAG SAFETY: If context is empty, set a clear flag ---
+    context = state.get('context', '')
+    if not context or context.strip().lower() in ["no context found", "retrieval error"]:
+        context = "No relevant information found for this module."
+        # If module context is empty, do not include conversation history
+        memory_str = ""
+
     # Determine the appropriate ending based on context and conversation state
     ending_instruction = ""
     
@@ -268,16 +289,19 @@ def build_prompt(state: dict, user_input: str) -> str:
         "- Respect the user's role (e.g., employee, manager, vendor, HR) to customize instructions.\n"
         "- Keep responses relevant — don't repeat earlier answers unless needed for clarity.\n"
         "- Your responses should be modular and context-aware.\n"
-        "- IMPORTANT: If the module context does not contain relevant information, please inform the user rather than guessing.\n"
+        "- IMPORTANT: If the module context does not contain relevant information, do NOT attempt to answer the user's question. Instead, politely inform the user that you cannot answer and ask them to rephrase or ask about the selected module.\n"
         "- Focus your responses strictly on the user's selected module and avoid discussing other modules.\n"
         "- IMPORTANT: You have access to conversation history below. Use it to provide context-aware responses.\n"
         "- Be conversational and engaging, but stay focused on the user's needs.\n"
         "- CRITICAL: When user says 'yes' or similar affirmative responses, progress to the NEXT step in the workflow. Do NOT repeat previous steps.\n"
         "- CRITICAL: Maintain step progression - if you were on Step 13, move to Step 14, not back to Step 11.\n\n"
         f"User Role (if known): {state.get('role', 'unknown')}\n"
-        f"Module Context (if applicable): {state.get('context', '')}\n"
+        f"Module Context (if applicable): {context}\n"
         f"Current Step: {current_step if current_step else 'Not specified'}\n"
-        f"Conversation History:\n{memory_str}\n\n"
+    )
+    if memory_str:
+        prompt += f"Conversation History:\n{memory_str}\n\n"
+    prompt += (
         f"User Input:\n{user_input}\n\n"
         f"{ending_instruction}"
     )
