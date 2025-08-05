@@ -85,20 +85,22 @@ def initialize_mem0_service() -> bool:
         logger.error(f"Failed to initialize Mem0 service: {e}")
         return False
 
-def _get_user_id(tenant_id: str, user_id: str, session_id: Optional[str] = None, module: Optional[str] = None) -> str:
+def _get_user_id(tenant_id: str, user_id: str, session_id: Optional[str] = None, module: Optional[str] = None, role: Optional[str] = None) -> str:
     """
     Generate a unique user ID for Mem0.
     """
     session = session_id or DEFAULT_SESSION_ID
     mod = module or DEFAULT_MODULE
+    user_role = role or "general"
     
     # Create a simple, predictable ID that avoids special characters
     clean_tenant = ''.join(c for c in tenant_id if c.isalnum())[:8]
     clean_user = ''.join(c for c in user_id if c.isalnum())[:8]
     clean_module = ''.join(c for c in mod if c.isalnum())[:8]
     clean_session = ''.join(c for c in session if c.isalnum())[:8]
+    clean_role = ''.join(c for c in user_role if c.isalnum())[:8]
     
-    return f"{clean_tenant}_{clean_user}_{clean_module}_{clean_session}"
+    return f"{clean_tenant}_{clean_user}_{clean_module}_{clean_role}_{clean_session}"
 
 
 
@@ -106,7 +108,8 @@ def get_user_context(
     tenant_id: str,
     user_id: str,
     session_id: Optional[str] = None,
-    module: Optional[str] = None
+    module: Optional[str] = None,
+    role: Optional[str] = None
 ) -> str:
     """
     Get user context from memories for prompt injection.
@@ -116,7 +119,7 @@ def get_user_context(
         return ""
     
     try:
-        mem0_user_id = _get_user_id(tenant_id, user_id, session_id, module)
+        mem0_user_id = _get_user_id(tenant_id, user_id, session_id, module, role)
         result = mem0_client.get_all(user_id=mem0_user_id)
         if not result or not result.get('results'):
             return ""
@@ -137,7 +140,8 @@ def store_user_memory(
     user_input: str,
     response_text: str,
     session_id: Optional[str] = None,
-    module: Optional[str] = None
+    module: Optional[str] = None,
+    role: Optional[str] = None
 ) -> bool:
     """
     Store user interaction in Mem0 for future context retrieval.
@@ -147,7 +151,7 @@ def store_user_memory(
         return False
     
     try:
-        mem0_user_id = _get_user_id(tenant_id, user_id, session_id, module)
+        mem0_user_id = _get_user_id(tenant_id, user_id, session_id, module, role)
         
         # Create a natural language memory entry
         memory_text = f"User asked: {user_input}. Assistant responded: {response_text}"

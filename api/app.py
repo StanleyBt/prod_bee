@@ -20,6 +20,12 @@ from services.llm import generate_llm_response
 from core.config import DEFAULT_MODULE
 from api.lifespan import lifespan
 from tracing import get_langfuse_client
+from utils.welcome_questions import (
+    load_welcome_questions,
+    get_available_modules,
+    get_available_roles,
+    get_random_sample_questions
+)
 
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -35,6 +41,7 @@ class QueryRequest(BaseModel):
     tenant_id: str
     session_id: str
     module: Optional[str] = None
+    role: str  # Make role required
     model_config = ConfigDict(extra="forbid")
 
 # --- GRAPH NODES ---
@@ -46,13 +53,15 @@ def create_rag_flow():
         tenant_id = state.get("tenant_id", "")
         session_id = state.get("session_id", "")
         module = state.get("module") or DEFAULT_MODULE
+        role = state.get("role", "")
 
         if langfuse:
             with langfuse.start_as_current_span(name="MemoryRetrieval") as span:
                 span.update(input={
                     "tenant_id": tenant_id,
                     "session_id": session_id,
-                    "module": module
+                    "module": module,
+                    "role": role
                 })
                 try:
                     # Retrieve conversation memories
@@ -60,6 +69,7 @@ def create_rag_flow():
                         tenant_id=tenant_id,
                         session_id=session_id,
                         module=module,
+                        role=role,
                         max_memories=10  # Limit to 10 most recent memories
                     )
                     state["memories"] = memories
@@ -70,7 +80,8 @@ def create_rag_flow():
                             tenant_id=tenant_id,
                             user_id=session_id,  # Use session_id as user_id
                             session_id=session_id,
-                            module=module
+                            module=module,
+                            role=role
                         )
                         state["user_preferences"] = user_context
                     except Exception as e:
@@ -82,7 +93,8 @@ def create_rag_flow():
                         "memories": memories[:3] if memories else [],  # First 3 for context
                         "user_preferences": state.get("user_preferences", ""),
                         "session_id": session_id,
-                        "module": module
+                        "module": module,
+                        "role": role
                     })
                     logger.info(f"Retrieved {len(memories)} memories and user preferences for session: {session_id}")
                 except Exception as e:
@@ -92,12 +104,13 @@ def create_rag_flow():
                     logger.error(f"Memory retrieval failed: {e}")
                 return state
         else:
-            # Retrieve conversation memories
+                        # Retrieve conversation memories
             memories = retrieve_memories(
                 tenant_id=tenant_id,
                 session_id=session_id,
                 module=module,
-                                    max_memories=10  # Limit to 10 most recent memories
+                role=role,
+                max_memories=10  # Limit to 10 most recent memories
             )
             state["memories"] = memories
             
@@ -107,7 +120,8 @@ def create_rag_flow():
                     tenant_id=tenant_id,
                     user_id=session_id,  # Use session_id as user_id
                     session_id=session_id,
-                    module=module
+                    module=module,
+                    role=role
                 )
                 state["user_preferences"] = user_context
             except Exception as e:
@@ -120,6 +134,7 @@ def create_rag_flow():
     def retriever_node(state: dict) -> dict:
         tenant_id = state.get("tenant_id", "")
         module = state.get("module") or DEFAULT_MODULE
+        role = state.get("role", "")
         user_input = state["input"]
 
         def preprocess_context(chunks: List[str], max_chars: int = 1000) -> str:
@@ -134,6 +149,7 @@ def create_rag_flow():
                     "query": user_input,
                     "tenant_id": tenant_id,
                     "module": module,
+                    "role": role,
                     "top_k": 3
                 })
                 try:
@@ -141,6 +157,7 @@ def create_rag_flow():
                         tenant_id=tenant_id,
                         query=user_input,
                         module=module,
+                        role=role,
                         top_k=3
                     )
                     
@@ -156,6 +173,7 @@ def create_rag_flow():
                         "context_preview": context_summary[:200] + "..." if len(context_summary) > 200 else context_summary,
                         "tenant_id": tenant_id,
                         "module": module,
+                        "role": role,
                         "query_embedding_generated": True
                     })
                 except Exception as e:
@@ -165,7 +183,8 @@ def create_rag_flow():
                         "result_count": 0,
                         "error": str(e),
                         "tenant_id": tenant_id,
-                        "module": module
+                        "module": module,
+                        "role": role
                     })
                 return state
         else:
@@ -174,6 +193,7 @@ def create_rag_flow():
                     tenant_id=tenant_id,
                     query=user_input,
                     module=module,
+                    role=role,
                     top_k=3
                 )
                 
@@ -208,7 +228,8 @@ def create_rag_flow():
                             "response_preview": full_response[:300] + "..." if len(full_response) > 300 else full_response,
                             "tenant_id": state["tenant_id"],
                             "session_id": state["session_id"],
-                            "module": state["module"]
+                            "module": state["module"],
+                            "role": state["role"]
                         })
                         state["llm_response"] = full_response
                         
@@ -329,6 +350,7 @@ async def query_rag(request: QueryRequest):
         "tenant_id": request.tenant_id,
         "session_id": request.session_id,
         "module": request.module or DEFAULT_MODULE,
+        "role": request.role # Pass role to the state
     }
     state = rag_flow_executor.invoke(state)
     full_response = state.get("llm_response", "[ERROR: No LLM response]")
@@ -340,7 +362,8 @@ async def query_rag(request: QueryRequest):
         user_input=request.input,
         response_text=full_response,
         session_id=state["session_id"],
-        module=state["module"]
+        module=state["module"],
+        role=state["role"]
     )
     
     # 2. Store in Mem0 for user preference context
@@ -351,7 +374,8 @@ async def query_rag(request: QueryRequest):
             user_input=request.input,
             response_text=full_response,
             session_id=state["session_id"],
-            module=state["module"]
+            module=state["module"],
+            role=state["role"]
         )
         if mem0_success:
             logger.info("Successfully stored user memory in Mem0")
@@ -371,13 +395,57 @@ async def health_check():
 @app.get("/welcome")
 async def welcome(tenant_id: str = Query(..., description="Tenant ID")):
     """
-    Welcome endpoint for tenants.
-    """
-    message = f"Welcome to {tenant_id}! I'm here to help you with any questions."
+    Welcome endpoint for tenants with all sample questions.
     
-    return {
-        "message": message
-    }
+    Returns all questions for the tenant - frontend will handle role-based filtering.
+    
+    Args:
+        tenant_id: The tenant ID
+        
+    Returns:
+        - Welcome message
+        - Available modules and roles
+        - All sample questions organized by module and role
+        - Quick start questions
+    """
+    try:
+        # Get available modules and roles
+        available_modules = get_available_modules(tenant_id)
+        available_roles = get_available_roles(tenant_id)
+        
+        # Get ALL questions (no role filtering - frontend will handle this)
+        all_questions = load_welcome_questions(tenant_id)
+        
+        # Get random sample questions for quick start (from all roles)
+        quick_start_questions = get_random_sample_questions(tenant_id, "hr", count=5)  # Use hr to get all questions
+        
+        # Build welcome message
+        message = f"Welcome to {tenant_id}! I'm here to help you with any questions."
+        
+        return {
+            "message": message,
+            "tenant_id": tenant_id,
+            "available_modules": available_modules,
+            "available_roles": available_roles,
+            "questions": all_questions,
+            "quick_start": quick_start_questions,
+            "total_questions": sum(
+                len(role_qs) for mod_qs in all_questions.values() for role_qs in mod_qs.values()
+            ),
+            "note": "Frontend should filter questions based on user role"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in welcome endpoint for tenant {tenant_id}: {e}")
+        return {
+            "error": "Failed to load sample questions",
+            "message": f"Welcome to {tenant_id}! I'm here to help you with any questions.",
+            "tenant_id": tenant_id,
+            "available_modules": [],
+            "available_roles": [],
+            "questions": {},
+            "quick_start": []
+        }
 
 # --- CLEANUP ENDPOINTS ---
 class ClearConversationsRequest(BaseModel):

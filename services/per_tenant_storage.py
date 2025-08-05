@@ -82,6 +82,7 @@ def ensure_tenant_collections(tenant_id: str) -> bool:
                     Property(name="metadata", data_type=DataType.TEXT),
                     Property(name="tenant_id", data_type=DataType.TEXT),
                     Property(name="module", data_type=DataType.TEXT),
+                    Property(name="role", data_type=DataType.TEXT),
                     Property(name="document_name", data_type=DataType.TEXT),
                     Property(name="filename", data_type=DataType.TEXT),
                     Property(name="page_count", data_type=DataType.INT),
@@ -104,6 +105,7 @@ def ensure_tenant_collections(tenant_id: str) -> bool:
                     Property(name="assistant_response", data_type=DataType.TEXT),
                     Property(name="session_id", data_type=DataType.TEXT),
                     Property(name="module", data_type=DataType.TEXT),
+                    Property(name="role", data_type=DataType.TEXT),
                     Property(name="created_at", data_type=DataType.DATE),
                 ],
                 vectorizer_config=None  # No vectorization for memory
@@ -119,7 +121,8 @@ def ensure_tenant_collections(tenant_id: str) -> bool:
 def store_document_chunks(
     tenant_id: str,
     chunks: List[Dict],
-    module: Optional[str] = None
+    module: Optional[str] = None,
+    role: Optional[str] = None
 ) -> bool:
     """
     Store document chunks in tenant-specific vector collection.
@@ -164,6 +167,7 @@ def store_document_chunks(
                     'metadata': str(chunk_metadata),
                     'tenant_id': tenant_id,
                     'module': module or 'general',
+                    'role': role or 'general',
                     'document_name': chunk_metadata.get('document_name', ''),
                     'filename': chunk_metadata.get('filename', ''),
                     'page_count': chunk_metadata.get('page_count', 0),
@@ -186,6 +190,7 @@ def retrieve_document_chunks(
     tenant_id: str,
     query: str,
     module: Optional[str] = None,
+    role: Optional[str] = None,
     top_k: int = 3
 ) -> List[str]:
     """
@@ -217,14 +222,17 @@ def retrieve_document_chunks(
         response = collection.query.near_vector(
             near_vector=query_vector,
             limit=top_k,
-            return_properties=["content", "metadata", "module", "tenant_id", "document_name", "filename", "page_count", "word_count", "chunk_index", "total_chunks"]
+            return_properties=["content", "metadata", "module", "role", "tenant_id", "document_name", "filename", "page_count", "word_count", "chunk_index", "total_chunks"]
         )
         
         results = []
         for obj in response.objects:
             # Since we're using per-tenant collections, all results are for this tenant
-            # Just filter by module if specified
-            if module is None or obj.properties.get('module') == module:
+            # Filter by module and role if specified
+            obj_module = obj.properties.get('module')
+            obj_role = obj.properties.get('role')
+            
+            if (module is None or obj_module == module) and (role is None or obj_role == role):
                 content = obj.properties.get('content', '')
                 metadata = obj.properties.get('metadata', '')
                 
@@ -259,6 +267,7 @@ def store_memory(
     response_text: str,
     session_id: str,  # required, used as user_id
     module: Optional[str] = None,
+    role: Optional[str] = None,
     span: Optional[Any] = None
 ) -> None:
     """
@@ -283,6 +292,7 @@ def store_memory(
             "assistant_response": response_text,
             "session_id": session_id,
             "module": module or "general",
+            "role": role or "general",
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         
@@ -291,7 +301,7 @@ def store_memory(
             properties=memory_data
         )
         
-        logger.info(f"✅ Stored memory for {tenant_id}:{session_id}:{module} in Weaviate")
+        logger.info(f"✅ Stored memory for {tenant_id}:{session_id}:{module}:{role} in Weaviate")
         
         if span:
             try:
@@ -300,7 +310,7 @@ def store_memory(
                 pass
                 
     except Exception as e:
-        logger.error(f"❌ Failed to store memory for {tenant_id}:{session_id}:{module} in Weaviate: {e}")
+        logger.error(f"❌ Failed to store memory for {tenant_id}:{session_id}:{module}:{role} in Weaviate: {e}")
         if span:
             try:
                 span.update(metadata={"memory_status": "Failed"})
@@ -314,6 +324,7 @@ def retrieve_memories(
     tenant_id: str,
     session_id: str,  # required, used as user_id
     module: Optional[str] = None,
+    role: Optional[str] = None,
     max_memories: int = 5
 ) -> List[Dict]:
     """
@@ -332,7 +343,7 @@ def retrieve_memories(
         
         collection = weaviate_client.collections.get(memory_collection)
         
-        # Create filters for session_id and module
+        # Create filters for session_id, module, and role
         filters = weaviate.classes.query.Filter.by_property("session_id").equal(session_id)
         
         if module:
@@ -340,12 +351,17 @@ def retrieve_memories(
             module_filter = weaviate.classes.query.Filter.by_property("module").equal(module)
             filters = filters & module_filter
         
+        if role:
+            # Add role filter
+            role_filter = weaviate.classes.query.Filter.by_property("role").equal(role)
+            filters = filters & role_filter
+        
         # Get memories ordered by creation date (newest first)
         response = collection.query.fetch_objects(
             limit=max_memories,
             filters=filters,
             sort=weaviate.classes.query.Sort.by_property("created_at", ascending=False),
-            return_properties=["user_input", "assistant_response", "session_id", "module", "created_at"]
+            return_properties=["user_input", "assistant_response", "session_id", "module", "role", "created_at"]
         )
         
         memories = []
@@ -355,14 +371,15 @@ def retrieve_memories(
                 "bot": obj.properties.get("assistant_response", ""),
                 "session_id": obj.properties.get("session_id", ""),
                 "module": obj.properties.get("module", ""),
+                "role": obj.properties.get("role", ""),
                 "created_at": obj.properties.get("created_at", "")
             })
         
-        logger.info(f"✅ Retrieved {len(memories)} memories for {tenant_id}:{session_id}:{module} from Weaviate")
+        logger.info(f"✅ Retrieved {len(memories)} memories for {tenant_id}:{session_id}:{module}:{role} from Weaviate")
         return memories
         
     except Exception as e:
-        logger.error(f"❌ Failed to retrieve memories for {tenant_id}:{session_id}:{module} from Weaviate: {e}")
+        logger.error(f"❌ Failed to retrieve memories for {tenant_id}:{session_id}:{module}:{role} from Weaviate: {e}")
         return []
 
 def list_tenant_collections() -> List[str]:

@@ -75,43 +75,50 @@ def ingest_all_documents(base_path: str = "data") -> None:
             module = module_dir.name
             logger.info(f"Processing module: {module}")
 
-            pdf_files = list(module_dir.glob("*.pdf"))
-            if not pdf_files:
-                logger.warning(f"No PDFs found in {module_dir}")
-                continue
+            for role_dir in module_dir.iterdir():
+                if not role_dir.is_dir():
+                    continue
+                role = role_dir.name
+                logger.info(f"Processing role: {role}")
 
-            for pdf_file in pdf_files:
-                rel_path = f"{tenant_id}/{module}/{pdf_file.name}"
-                current_hash = compute_file_hash(pdf_file)
-
-                if existing_hashes.get(rel_path) == current_hash:
-                    logger.info(f"Skipping unchanged file: {rel_path}")
+                pdf_files = list(role_dir.glob("*.pdf"))
+                if not pdf_files:
+                    logger.warning(f"No PDFs found in {role_dir}")
                     continue
 
-                logger.info(f"Ingesting file: {rel_path}")
-                chunk_data = extract_chunks_from_pdf(str(pdf_file))
-                
-                # Convert to the format expected by store_document_chunks
-                chunk_objs = []
-                for chunk_info in chunk_data:
-                    # Merge document metadata with chunk metadata
-                    enhanced_metadata = {
-                        **chunk_info["metadata"],
-                        "tenant_id": tenant_id,
-                        "module": module,
-                        "document_name": pdf_file.stem,
-                        "chunk_index": chunk_info["chunk_index"],
-                        "total_chunks": chunk_info["total_chunks"]
-                    }
-                    
-                    chunk_objs.append({
-                        "content": chunk_info["content"],
-                        "metadata": enhanced_metadata
-                    })
+                for pdf_file in pdf_files:
+                    rel_path = f"{tenant_id}/{module}/{role}/{pdf_file.name}"
+                    current_hash = compute_file_hash(pdf_file)
 
-                store_document_chunks(tenant_id, chunk_objs, module)
-                updated_hashes[rel_path] = current_hash
-                any_files_ingested = True
+                    if existing_hashes.get(rel_path) == current_hash:
+                        logger.info(f"Skipping unchanged file: {rel_path}")
+                        continue
+
+                    logger.info(f"Ingesting file: {rel_path}")
+                    chunk_data = extract_chunks_from_pdf(str(pdf_file))
+                    
+                    # Convert to the format expected by store_document_chunks
+                    chunk_objs = []
+                    for chunk_info in chunk_data:
+                        # Merge document metadata with chunk metadata
+                        enhanced_metadata = {
+                            **chunk_info["metadata"],
+                            "tenant_id": tenant_id,
+                            "module": module,
+                            "role": role,
+                            "document_name": pdf_file.stem,
+                            "chunk_index": chunk_info["chunk_index"],
+                            "total_chunks": chunk_info["total_chunks"]
+                        }
+                        
+                        chunk_objs.append({
+                            "content": chunk_info["content"],
+                            "metadata": enhanced_metadata
+                        })
+
+                    store_document_chunks(tenant_id, chunk_objs, module, role)
+                    updated_hashes[rel_path] = current_hash
+                    any_files_ingested = True
 
     # Merge updated hashes with existing and save
     existing_hashes.update(updated_hashes)
