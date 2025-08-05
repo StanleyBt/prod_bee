@@ -18,6 +18,7 @@ from core.config import (
 )
 
 import os
+import atexit
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -27,6 +28,17 @@ logger = logging.getLogger(__name__)
 
 # Global Mem0 client
 mem0_client: Optional[Memory] = None
+
+def _ensure_mem0_cleanup():
+    """
+    Ensure Mem0 cleanup happens even if not explicitly called.
+    """
+    global mem0_client
+    if mem0_client:
+        mem0_client = None
+
+# Register cleanup function to run at exit
+atexit.register(_ensure_mem0_cleanup)
 
 def initialize_mem0_service() -> bool:
     """
@@ -181,7 +193,12 @@ def close_mem0_service():
     try:
         if mem0_client:
             # Mem0 doesn't have an explicit close method, but we can clear the reference
+            # This should trigger garbage collection and close underlying connections
             mem0_client = None
             logger.info("Mem0 service connections closed")
+        else:
+            logger.info("Mem0 service was not initialized")
     except Exception as e:
         logger.error(f"Error closing Mem0 service: {e}")
+        # Ensure client is cleared even if cleanup fails
+        mem0_client = None

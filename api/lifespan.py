@@ -1,6 +1,8 @@
 # api/lifespan.py
 
 import logging
+import signal
+import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
@@ -8,6 +10,17 @@ from services.per_tenant_storage import initialize_per_tenant_storage, close_per
 from services.mem0_service import initialize_mem0_service, close_mem0_service
 
 logger = logging.getLogger(__name__)
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals to ensure proper cleanup"""
+    logger.info(f"Received signal {signum}, shutting down gracefully...")
+    close_per_tenant_storage()
+    close_mem0_service()
+    sys.exit(0)
+
+# Register signal handlers for graceful shutdown
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 
 

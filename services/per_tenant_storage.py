@@ -13,12 +13,29 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import re
 import json
+import atexit
 from core.config import WEAVIATE_URL, WEAVIATE_API_KEY, CONVERSATION_TIMEOUT, ENABLE_CLEANUP
 
 logger = logging.getLogger(__name__)
 
 # Global client
 weaviate_client: Optional[weaviate.WeaviateClient] = None
+
+def _ensure_cleanup():
+    """
+    Ensure cleanup happens even if not explicitly called.
+    This is a safety measure for garbage collection.
+    """
+    global weaviate_client
+    if weaviate_client:
+        try:
+            weaviate_client.close()
+        except:
+            pass
+        weaviate_client = None
+
+# Register cleanup function to run at exit
+atexit.register(_ensure_cleanup)
 
 
 def initialize_per_tenant_storage() -> bool:
@@ -27,6 +44,14 @@ def initialize_per_tenant_storage() -> bool:
     """
     global weaviate_client
     try:
+        # Close any existing connection first
+        if weaviate_client:
+            try:
+                weaviate_client.close()
+            except:
+                pass
+            weaviate_client = None
+        
         weaviate_client = weaviate.connect_to_local()
         if weaviate_client.is_ready():
             version_info = weaviate_client.get_meta()
@@ -34,9 +59,18 @@ def initialize_per_tenant_storage() -> bool:
             return True
         else:
             logger.error("Weaviate is not ready")
+            if weaviate_client:
+                weaviate_client.close()
+                weaviate_client = None
             return False
     except Exception as e:
         logger.error(f"Weaviate connection failed: {e}")
+        if weaviate_client:
+            try:
+                weaviate_client.close()
+            except:
+                pass
+            weaviate_client = None
         return False
 
 def _sanitize_tenant_id(tenant_id: str) -> str:
@@ -468,10 +502,14 @@ def close_per_tenant_storage() -> None:
     global weaviate_client
     if weaviate_client:
         try:
+            # Force close any remaining connections
             weaviate_client.close()
+            # Clear the client reference
             weaviate_client = None
             logger.info("Per-tenant storage service closed.")
         except Exception as e:
             logger.error(f"Error during per-tenant storage shutdown: {e}")
+            # Ensure client is cleared even if close fails
+            weaviate_client = None
     else:
         logger.info("Per-tenant storage service was not initialized.") 

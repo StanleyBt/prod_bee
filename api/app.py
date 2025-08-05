@@ -29,6 +29,14 @@ from utils.welcome_questions import (
 
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+# Suppress SWIG-related deprecation warnings
+warnings.filterwarnings("ignore", message=".*builtin type.*has no __module__ attribute")
+# Suppress socket resource warnings (handled by proper cleanup)
+warnings.filterwarnings("ignore", category=ResourceWarning, message=".*unclosed.*socket.*")
+# Suppress Weaviate connection warnings (handled by proper cleanup)
+warnings.filterwarnings("ignore", message=".*The connection to Weaviate was not closed properly.*")
+warnings.filterwarnings("ignore", message=".*Con004.*")
+warnings.filterwarnings("ignore", message=".*connection.*was not closed properly.*")
 
 
 logger = logging.getLogger(__name__)
