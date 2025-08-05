@@ -20,7 +20,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
-
+ 
 def compute_file_hash(file_path: Path) -> str:
     """Compute SHA256 hash of a file."""
     sha256 = hashlib.sha256()
@@ -89,13 +89,25 @@ def ingest_all_documents(base_path: str = "data") -> None:
                     continue
 
                 logger.info(f"Ingesting file: {rel_path}")
-                chunks = extract_chunks_from_pdf(str(pdf_file))
-                chunk_objs = [{
-                    "content": chunk,
-                    "tenant_id": tenant_id,
-                    "module": module,
-                    "document_name": pdf_file.stem
-                } for chunk in chunks]
+                chunk_data = extract_chunks_from_pdf(str(pdf_file))
+                
+                # Convert to the format expected by store_document_chunks
+                chunk_objs = []
+                for chunk_info in chunk_data:
+                    # Merge document metadata with chunk metadata
+                    enhanced_metadata = {
+                        **chunk_info["metadata"],
+                        "tenant_id": tenant_id,
+                        "module": module,
+                        "document_name": pdf_file.stem,
+                        "chunk_index": chunk_info["chunk_index"],
+                        "total_chunks": chunk_info["total_chunks"]
+                    }
+                    
+                    chunk_objs.append({
+                        "content": chunk_info["content"],
+                        "metadata": enhanced_metadata
+                    })
 
                 store_document_chunks(tenant_id, chunk_objs, module)
                 updated_hashes[rel_path] = current_hash

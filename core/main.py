@@ -16,8 +16,6 @@ sys.path.insert(0, str(project_root))
 from api.app import app 
 from core.config import (
     DEFAULT_MODULE,
-    DELETE_COLLECTION_ON_INGEST,
-    WEAVIATE_COLLECTION_NAME,
 )
 from services.per_tenant_storage import (
     initialize_per_tenant_storage,
@@ -26,6 +24,7 @@ from services.per_tenant_storage import (
 
 from services.llm import test_llm_connection # To test LLM connection before starting
 from core.ingestion import ingest_all_documents # The actual ingestion logic
+
 
 # Basic logging setup for the main script
 logging.basicConfig(
@@ -46,8 +45,9 @@ def pre_flight_checks_and_ingestion():
     # Test LLM connection
     if not test_llm_connection():
         logger.error("LLM connection failed. This is critical for the application.")
-        # Depending on criticality, you might want to exit here
-        # sys.exit(1)
+
+    # Note: Mem0 service will be initialized in FastAPI lifespan
+    # This avoids duplicate initialization between main.py and lifespan.py
 
     # Initialize per-tenant storage for schema management and potential ingestion
     # Note: This is a temporary initialization for ingestion only
@@ -55,7 +55,6 @@ def pre_flight_checks_and_ingestion():
     storage_ready = initialize_per_tenant_storage()
     if not storage_ready:
         logger.error("Per-tenant storage not ready. Data ingestion and retrieval will fail.")
-        # sys.exit(1) # Consider exiting if storage is absolutely essential
 
     # Memory storage is handled by per-tenant storage
     if not storage_ready:

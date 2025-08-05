@@ -19,30 +19,33 @@ AZURE_API_BASE = get_env_var("AZURE_OPENAI_API_BASE")
 AZURE_API_VERSION = get_env_var("AZURE_API_VERSION", required=False, default="2025-01-01-preview")
 AZURE_DEPLOYMENT_NAME = get_env_var("AZURE_OPENAI_DEPLOYMENT_NAME")
 
-
-
-# Azure OpenAI Embedding Model Settings
-# Use the same API key and base for embeddings if not separately configured
-AZURE_EMBEDDING_API_KEY = get_env_var("AZURE_EMBEDDING_API_KEY", required=False) or AZURE_API_KEY
-AZURE_EMBEDDING_API_BASE = get_env_var("AZURE_EMBEDDING_API_BASE", required=False) or AZURE_API_BASE
-AZURE_EMBEDDING_API_VERSION = get_env_var("AZURE_EMBEDDING_API_VERSION", required=False, default="2023-05-15")
-AZURE_EMBEDDING_DEPLOYMENT_NAME = get_env_var("AZURE_EMBEDDING_DEPLOYMENT_NAME", required=False) or AZURE_DEPLOYMENT_NAME
-
+# Azure OpenAI Embedding Settings
+AZURE_EMBEDDING_API_KEY = get_env_var("AZURE_EMBEDDING_API_KEY")
+AZURE_EMBEDDING_API_BASE = get_env_var("AZURE_EMBEDDING_API_BASE")
+AZURE_EMBEDDING_API_VERSION = get_env_var("AZURE_EMBEDDING_API_VERSION", required=False, default="2025-01-01-preview")
+AZURE_EMBEDDING_DEPLOYMENT_NAME = get_env_var("AZURE_EMBEDDING_DEPLOYMENT_NAME")
 
 # Weaviate Settings
 WEAVIATE_URL = get_env_var("WEAVIATE_URL", required=False, default="http://localhost:8080")
-WEAVIATE_COLLECTION_NAME = get_env_var("WEAVIATE_COLLECTION_NAME", required=False, default="multi_tenant_collection")
+WEAVIATE_API_KEY = get_env_var("WEAVIATE_API_KEY", required=False, default=None)
 
-# Mem0 Settings (optional)
-MEM0_CLUSTER_URL = get_env_var("MEM0_CLUSTER_URL", required=False, default="http://localhost:8080")
+# Mem0 Settings
 MEM0_COLLECTION_NAME = get_env_var("MEM0_COLLECTION_NAME", required=False, default="Mem0Memory")
 
-# Other configurable constants
-DEFAULT_CHUNK_SIZE = int(get_env_var("DEFAULT_CHUNK_SIZE", required=False, default="500") or "500")
-DEFAULT_CHUNK_OVERLAP = int(get_env_var("DEFAULT_CHUNK_OVERLAP", required=False, default="50") or "50")
-
-# Add any other config variables here as needed
-
-DEFAULT_MODULE = "others"
+# Default Values
+DEFAULT_MODULE = "default"
 DEFAULT_SESSION_ID = "default_session"
-DELETE_COLLECTION_ON_INGEST = False
+
+# Document Processing Settings
+DEFAULT_CHUNK_SIZE = 100000  # Very large chunk size to effectively create single chunks per document
+DEFAULT_CHUNK_OVERLAP = 0    # No overlap since we want single chunks
+SINGLE_CHUNK_PER_DOCUMENT = True  # Flag to enable single chunk per document mode
+
+# Conversation Flow Settings
+QUESTION_WORDS = ['how', 'what', 'when', 'where', 'why', 'can', 'could', 'would', 'should', 'is', 'are', 'do', 'does']
+AFFIRMATIVE_WORDS = ['yes', 'y', 'ok', 'okay', 'sure', 'continue', 'next', 'proceed']
+
+# Session Cleanup Settings
+CONVERSATION_TIMEOUT = 1800  # 30 minutes in seconds
+CLEANUP_INTERVAL = 300       # Check every 5 minutes
+ENABLE_CLEANUP = True        # Enable/disable cleanup feature

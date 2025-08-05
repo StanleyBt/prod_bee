@@ -16,7 +16,7 @@ def test_llm_connection():
     try:
         resp = litellm.completion(
             model=f"azure/{AZURE_DEPLOYMENT_NAME}",
-            messages=[{"role": "user", "content": "Hello AI"}],
+            messages=[{"role": "user", "content": "Test connection"}],
             api_key=AZURE_API_KEY,
             api_base=AZURE_API_BASE,
             api_version=AZURE_API_VERSION,

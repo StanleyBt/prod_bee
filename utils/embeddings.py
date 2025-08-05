@@ -46,8 +46,7 @@ def get_openai_embedding(text: str) -> Optional[List[float]]:
             azure_endpoint=AZURE_EMBEDDING_API_BASE,
         )
         
-        # Log the text being embedded for debugging
-        logger.debug(f"Embedding text (first 100 chars): {cleaned_text[:100]}...")
+
         
         # For Azure OpenAI, we might need to use the deployment name differently
         # Try using the full model name instead of deployment name

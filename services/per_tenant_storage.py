@@ -9,10 +9,11 @@ import logging
 from typing import Optional, List, Dict, Any
 import weaviate
 from weaviate.classes.config import Configure, Property, DataType
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import re
 import json
+from core.config import WEAVIATE_URL, WEAVIATE_API_KEY, CONVERSATION_TIMEOUT, ENABLE_CLEANUP
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,12 @@ def ensure_tenant_collections(tenant_id: str) -> bool:
                     Property(name="metadata", data_type=DataType.TEXT),
                     Property(name="tenant_id", data_type=DataType.TEXT),
                     Property(name="module", data_type=DataType.TEXT),
+                    Property(name="document_name", data_type=DataType.TEXT),
+                    Property(name="filename", data_type=DataType.TEXT),
+                    Property(name="page_count", data_type=DataType.INT),
+                    Property(name="word_count", data_type=DataType.INT),
+                    Property(name="chunk_index", data_type=DataType.INT),
+                    Property(name="total_chunks", data_type=DataType.INT),
                     Property(name="created_at", data_type=DataType.DATE),
                 ],
                 vectorizer_config=None  # No vectorizer - we'll add vectors manually
@@ -147,14 +154,23 @@ def store_document_chunks(
                 logger.warning(f"Failed to get embedding for chunk, skipping")
                 continue
             
-            # Insert with vector
+            # Get metadata from chunk
+            chunk_metadata = chunk.get('metadata', {})
+            
+            # Insert with vector and enhanced metadata
             collection.data.insert(
                 properties={
                     'content': content,
-                    'metadata': str(chunk.get('metadata', {})),
+                    'metadata': str(chunk_metadata),
                     'tenant_id': tenant_id,
                     'module': module or 'general',
-                    'created_at': datetime.utcnow().isoformat() + 'Z'
+                    'document_name': chunk_metadata.get('document_name', ''),
+                    'filename': chunk_metadata.get('filename', ''),
+                    'page_count': chunk_metadata.get('page_count', 0),
+                    'word_count': chunk_metadata.get('word_count', 0),
+                    'chunk_index': chunk_metadata.get('chunk_index', 0),
+                    'total_chunks': chunk_metadata.get('total_chunks', 1),
+                    'created_at': datetime.now(timezone.utc).isoformat()
                 },
                 vector=vector
             )
@@ -201,7 +217,7 @@ def retrieve_document_chunks(
         response = collection.query.near_vector(
             near_vector=query_vector,
             limit=top_k,
-            return_properties=["content", "metadata", "module", "tenant_id"]
+            return_properties=["content", "metadata", "module", "tenant_id", "document_name", "filename", "page_count", "word_count", "chunk_index", "total_chunks"]
         )
         
         results = []
@@ -212,20 +228,23 @@ def retrieve_document_chunks(
                 content = obj.properties.get('content', '')
                 metadata = obj.properties.get('metadata', '')
                 
-                # Try to extract document source from metadata
-                document_source = "Unknown"
-                if metadata and isinstance(metadata, str):
-                    try:
-                        import json
-                        metadata_dict = json.loads(metadata)
-                        if 'source' in metadata_dict:
-                            document_source = metadata_dict['source']
-                    except:
-                        pass
+                # Extract document information
+                document_name = obj.properties.get('document_name', 'Unknown')
+                filename = obj.properties.get('filename', 'Unknown')
+                page_count = obj.properties.get('page_count', 0)
+                word_count = obj.properties.get('word_count', 0)
+                chunk_index = obj.properties.get('chunk_index', 0)
+                total_chunks = obj.properties.get('total_chunks', 1)
                 
-                # Add document source to content for context
+                # Create enhanced context
+                if total_chunks == 1:
+                    context = f"[Document: {document_name} | File: {filename} | Pages: {page_count} | Words: {word_count}]"
+                else:
+                    context = f"[Document: {document_name} | File: {filename} | Chunk {chunk_index + 1}/{total_chunks} | Pages: {page_count} | Words: {word_count}]"
+                
+                # Add document context to content
                 if content:
-                    results.append(f"[Source: {document_source}]\n{content}")
+                    results.append(f"{context}\n{content}")
         
         logger.info(f"✓ Retrieved {len(results)} chunks from {vector_collection}")
         return results
@@ -264,7 +283,7 @@ def store_memory(
             "assistant_response": response_text,
             "session_id": session_id,
             "module": module or "general",
-            "created_at": datetime.utcnow().isoformat() + 'Z'
+            "created_at": datetime.now(timezone.utc).isoformat()
         }
         
         # Store in Weaviate
@@ -288,21 +307,7 @@ def store_memory(
             except Exception:
                 pass
 
-# Example streaming handler (pseudo-code)
-def handle_streaming_response(tenant_id, user_input, session_id, module, stream_chunks):
-    """
-    Buffer streaming LLM response and store only the final message.
-    """
-    full_response = ""
-    for chunk in stream_chunks:
-        full_response += chunk
-    store_memory(
-        tenant_id=tenant_id,
-        user_input=user_input,
-        response_text=full_response,
-        session_id=session_id,
-        module=module
-    )
+
 
 
 def retrieve_memories(
@@ -386,32 +391,58 @@ def list_tenant_collections() -> List[str]:
         logger.error(f"Failed to list tenant collections: {e}")
         return []
 
-def delete_tenant_data(tenant_id: str) -> bool:
+
+
+def clear_session_conversations(tenant_id: str, session_id: str) -> dict:
     """
-    Delete all data for a specific tenant.
+    Clear all Weaviate conversation memories for a specific session.
+    Preserves Mem0 memories - only cleans up Weaviate conversation history.
+    Returns a dict with status and count of deleted messages.
     """
     if not weaviate_client:
-        logger.error("Weaviate client not initialized")
-        return False
-    
-    vector_collection, memory_collection = _get_collection_names(tenant_id)
+        return {"success": False, "error": "Weaviate client not initialized", "deleted_count": 0}
     
     try:
-        # Delete vector collection
-        if weaviate_client.collections.exists(vector_collection):
-            weaviate_client.collections.delete(vector_collection)
-            logger.info(f"✓ Deleted vector collection: {vector_collection}")
+        deleted_count = 0
+        _, memory_collection = _get_collection_names(tenant_id)
         
-        # Delete memory collection
-        if weaviate_client.collections.exists(memory_collection):
-            weaviate_client.collections.delete(memory_collection)
-            logger.info(f"✓ Deleted memory collection: {memory_collection}")
+        # Ensure collection exists
+        if not ensure_tenant_collections(tenant_id):
+            return {"success": False, "error": f"Failed to ensure collections exist for tenant {tenant_id}", "deleted_count": 0}
         
-        return True
+        collection = weaviate_client.collections.get(memory_collection)
+        
+        # Get all objects for the session
+        response = collection.query.fetch_objects(
+            limit=1000,
+            return_properties=["session_id", "user_input", "created_at"]
+        )
+        
+        # Filter by session_id
+        for obj in response.objects:
+            obj_session_id = obj.properties.get('session_id', '')
+            
+            # Check if this object matches our session
+            if obj_session_id == session_id:
+                try:
+                    collection.data.delete_by_id(obj.uuid)
+                    deleted_count += 1
+                    user_input = obj.properties.get('user_input', '')[:50]
+                    logger.info(f"🗑️ Deleted conversation: session={session_id}, user='{user_input}...'")
+                except Exception as e:
+                    logger.warning(f"Failed to delete conversation {obj.uuid}: {e}")
+        
+        if deleted_count > 0:
+            logger.info(f"✅ Cleared {deleted_count} Weaviate conversations for session {session_id} (Mem0 memories preserved)")
+            return {"success": True, "deleted_count": deleted_count, "message": f"Cleared {deleted_count} conversations"}
+        else:
+            logger.info(f"ℹ️ No Weaviate conversations found for session {session_id}")
+            return {"success": True, "deleted_count": 0, "message": "No conversations found to clear"}
         
     except Exception as e:
-        logger.error(f"Failed to delete tenant data for {tenant_id}: {e}")
-        return False
+        error_msg = f"Failed to clear conversations for {tenant_id}:{session_id}: {e}"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg, "deleted_count": 0}
 
 def close_per_tenant_storage() -> None:
     """
