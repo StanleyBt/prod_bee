@@ -8,13 +8,11 @@ for each tenant for both vector storage (document chunks) and memory storage.
 import logging
 from typing import Optional, List, Dict, Any
 import weaviate
-from weaviate.classes.config import Configure, Property, DataType
-from datetime import datetime, timedelta, timezone
-from collections import defaultdict
+from weaviate.classes.config import Property, DataType
+from datetime import datetime, timezone
 import re
-import json
 import atexit
-from core.config import WEAVIATE_URL, WEAVIATE_API_KEY, CONVERSATION_TIMEOUT, ENABLE_CLEANUP
+from core.config import WEAVIATE_URL, WEAVIATE_API_KEY
 
 logger = logging.getLogger(__name__)
 

@@ -40,12 +40,3 @@ DEFAULT_SESSION_ID = "default_session"
 DEFAULT_CHUNK_SIZE = 100000  # Very large chunk size to effectively create single chunks per document
 DEFAULT_CHUNK_OVERLAP = 0    # No overlap since we want single chunks
 SINGLE_CHUNK_PER_DOCUMENT = True  # Flag to enable single chunk per document mode
-
-# Conversation Flow Settings
-QUESTION_WORDS = ['how', 'what', 'when', 'where', 'why', 'can', 'could', 'would', 'should', 'is', 'are', 'do', 'does']
-AFFIRMATIVE_WORDS = ['yes', 'y', 'ok', 'okay', 'sure', 'continue', 'next', 'proceed']
-
-# Session Cleanup Settings
-CONVERSATION_TIMEOUT = 1800  # 30 minutes in seconds
-CLEANUP_INTERVAL = 300       # Check every 5 minutes
-ENABLE_CLEANUP = True        # Enable/disable cleanup feature

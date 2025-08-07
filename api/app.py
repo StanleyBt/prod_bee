@@ -145,7 +145,11 @@ def create_rag_flow():
         role = state.get("role", "")
         user_input = state["input"]
 
-        def preprocess_context(chunks: List[str], max_chars: int = 1000) -> str:
+        def preprocess_context(chunks: List[str], max_chars: int = 3000) -> str:
+            if not chunks:
+                return ""
+            
+            # Simple approach: combine chunks and let LLM handle semantic understanding
             combined = " ".join(chunks)
             if len(combined) > max_chars:
                 combined = combined[:max_chars] + "..."
@@ -173,6 +177,9 @@ def create_rag_flow():
                     
                     context_summary = preprocess_context(result)
                     state["context"] = context_summary if context_summary else "No context found"
+                    
+                    # Log retrieval summary
+                    logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars")
                     
                     # Enhanced output with detailed retrieval info
                     span.update(output={
@@ -209,6 +216,9 @@ def create_rag_flow():
                 
                 context_summary = preprocess_context(result)
                 state["context"] = context_summary if context_summary else "No context found"
+                
+                # Log retrieval summary
+                logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars")
             except Exception:
                 state["context"] = "Retrieval error"
             return state
@@ -323,7 +333,11 @@ def build_prompt(state: dict, user_input: str) -> str:
     
     prompt = (
         "You are a smart, friendly, and professional AI assistant built for a modern SaaS platform. "
+        "CRITICAL INSTRUCTION: You MUST base your responses PRIMARILY on the provided module context below. "
+        "If the context contains specific information, use ONLY that information. Do NOT make up or hallucinate additional details.\n\n"
         "Instructions:\n"
+        "- CRITICAL: Base your response STRICTLY on the module context provided below.\n"
+        "- If the context is insufficient or unclear, say so rather than making assumptions.\n"
         "- Understand the user's intent using context and conversation history.\n"
         "- Respond clearly and concisely using markdown formatting — include bullet points, numbered steps, or headings if useful.\n"
         "- Avoid overwhelming users — provide just enough detail to address their current need.\n"
@@ -339,13 +353,16 @@ def build_prompt(state: dict, user_input: str) -> str:
         "- IMPORTANT: Adapt your response style based on the user's preferences below.\n\n"
         f"User Role (if known): {state.get('role', 'unknown')}\n"
         f"User Preferences: {user_preferences if user_preferences else 'No specific preferences found'}\n"
-        f"Module Context (if applicable): {context}\n"
+        f"MODULE CONTEXT (REQUIRED - Base your response on this):\n{context}\n"
 
     )
     if memory_str:
         prompt += f"Conversation History:\n{memory_str}\n\n"
     prompt += (
         f"User Input:\n{user_input}\n\n"
+        f"REMEMBER: Base your response ONLY on the module context provided above. "
+        f"If the context doesn't contain enough information, say so clearly. "
+        f"Do not add details that are not in the provided context.\n\n"
         f"{ending_instruction}"
     )
     return prompt

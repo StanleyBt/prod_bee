@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
     Initializes per-tenant storage which handles both document chunks and memory storage.
     Note: This will create fresh connections even if they were closed by main.py pre-flight checks.
     """
-    global cleanup_running, cleanup_thread
+
     
     logger.info("Application lifespan startup: Initializing services...")
     
