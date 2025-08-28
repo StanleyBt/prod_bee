@@ -1,6 +1,16 @@
 import logging
 from typing import Optional, List
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from core.logging_config import initialize_logging, get_logger
+from core.error_handling import (
+    RAGException, ValidationError, RateLimitError, ServiceUnavailableError,
+    TenantNotFoundError, rag_exception_handler, validation_exception_handler,
+    http_exception_handler, general_exception_handler
+)
+from core.middleware import RequestCorrelationMiddleware, MetricsMiddleware
 
 from pydantic import BaseModel, ConfigDict
 from langgraph.graph import Graph, END
@@ -17,7 +27,7 @@ from services.mem0_service import (
     store_user_memory
 )
 from services.llm import generate_llm_response
-from core.config import DEFAULT_MODULE
+from core.config import DEFAULT_MODULE, MAX_CONTEXT_CHARS, MAX_CHUNKS_PER_QUERY
 from api.lifespan import lifespan
 from tracing import get_langfuse_client
 from utils.welcome_questions import (
@@ -25,6 +35,17 @@ from utils.welcome_questions import (
     get_available_modules,
     get_available_roles,
     get_random_sample_questions
+)
+
+# Import validation and rate limiting modules
+from core.validation import (
+    SanitizedQueryRequest,
+    SanitizedClearRequest,
+    sanitize_text
+)
+from core.rate_limiting import (
+    check_user_rate_limit,
+    RateLimitConfig
 )
 
 import warnings
@@ -39,11 +60,37 @@ warnings.filterwarnings("ignore", message=".*Con004.*")
 warnings.filterwarnings("ignore", message=".*connection.*was not closed properly.*")
 
 
-logger = logging.getLogger(__name__)
+# Initialize logging
+initialize_logging()
+logger = get_logger(__name__)
 
 app = FastAPI(lifespan=lifespan, title="Multi-Tenant RAG API")
 
+# Add middleware
+app.add_middleware(RequestCorrelationMiddleware)
+metrics_middleware = MetricsMiddleware(app)
+app.add_middleware(MetricsMiddleware)
+
+# Add exception handlers
+app.add_exception_handler(RAGException, rag_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(Exception, general_exception_handler)
+
+# Configure rate limiting
+rate_limit_config = RateLimitConfig(
+    requests_per_minute=60,
+    requests_per_hour=1000,
+    requests_per_day=10000,
+    burst_limit=10
+)
+
+# Create rate limiter for endpoint-level rate limiting
+from core.rate_limiting import RateLimiter
+rate_limiter = RateLimiter(rate_limit_config)
+
 # --- MODELS ---
+# Keep original models for backward compatibility, but use sanitized versions in endpoints
 class QueryRequest(BaseModel):
     input: str
     tenant_id: str
@@ -51,6 +98,32 @@ class QueryRequest(BaseModel):
     module: Optional[str] = None
     role: str  # Make role required
     model_config = ConfigDict(extra="forbid")
+
+class ClearConversationsRequest(BaseModel):
+    tenant_id: str
+    session_id: str
+    model_config = ConfigDict(extra="forbid")
+
+# --- RATE LIMITING DEPENDENCIES ---
+def check_rate_limit(request: Request, tenant_id: str, session_id: str):
+    """Check rate limit for the current request"""
+    endpoint = request.url.path
+    return check_user_rate_limit(tenant_id, session_id, endpoint)
+
+# --- VALIDATION DEPENDENCIES ---
+async def validate_query_request(request: QueryRequest) -> SanitizedQueryRequest:
+    """Validate and sanitize query request"""
+    try:
+        return SanitizedQueryRequest(**request.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+async def validate_clear_request(request: ClearConversationsRequest) -> SanitizedClearRequest:
+    """Validate and sanitize clear request"""
+    try:
+        return SanitizedClearRequest(**request.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 # --- GRAPH NODES ---
 def create_rag_flow():
@@ -145,15 +218,54 @@ def create_rag_flow():
         role = state.get("role", "")
         user_input = state["input"]
 
-        def preprocess_context(chunks: List[str], max_chars: int = 3000) -> str:
+        def preprocess_context(chunks: List[str], max_chars: int = MAX_CONTEXT_CHARS) -> tuple[str, List[str]]:
             if not chunks:
-                return ""
+                return "", []
             
-            # Simple approach: combine chunks and let LLM handle semantic understanding
-            combined = " ".join(chunks)
-            if len(combined) > max_chars:
-                combined = combined[:max_chars] + "..."
-            return combined
+            # Get video URLs from mapping file for this tenant
+            from utils.video_mapping import load_video_mapping
+            video_mapping = load_video_mapping(tenant_id)
+            
+            # Extract document filenames from chunks and get their video URLs
+            video_urls = []
+            for chunk in chunks:
+                # Extract filename from chunk context
+                if "File:" in chunk:
+                    try:
+                        file_start = chunk.find("File:") + 5
+                        file_end = chunk.find(" |", file_start)
+                        if file_end == -1:
+                            file_end = chunk.find("]", file_start)
+                        if file_end == -1:
+                            file_end = len(chunk)
+                        filename = chunk[file_start:file_end].strip()
+                        
+                        # Get video URL from mapping
+                        if filename in video_mapping:
+                            video_url = video_mapping[filename]
+                            if video_url and video_url not in video_urls:
+                                video_urls.append(video_url)
+                    except Exception as e:
+                        logger.debug(f"Failed to extract filename from chunk: {e}")
+            
+            # Intelligent chunk combination with better token management
+            # Prioritize complete chunks over truncation
+            combined_chunks = []
+            current_length = 0
+            
+            for chunk in chunks:
+                chunk_length = len(chunk)
+                # If adding this chunk would exceed limit, stop
+                if current_length + chunk_length > max_chars:
+                    break
+                combined_chunks.append(chunk)
+                current_length += chunk_length
+            
+            if combined_chunks:
+                return " ".join(combined_chunks), video_urls
+            else:
+                # If even the first chunk is too long, truncate it
+                return chunks[0][:max_chars] + "..." if chunks else "", video_urls
 
         if langfuse:
             with langfuse.start_as_current_span(name="VectorRetrieval") as span:
@@ -162,7 +274,7 @@ def create_rag_flow():
                     "tenant_id": tenant_id,
                     "module": module,
                     "role": role,
-                    "top_k": 3
+                    "top_k": MAX_CHUNKS_PER_QUERY
                 })
                 try:
                     result = retrieve_document_chunks(
@@ -170,22 +282,22 @@ def create_rag_flow():
                         query=user_input,
                         module=module,
                         role=role,
-                        top_k=3
+                        top_k=MAX_CHUNKS_PER_QUERY
                     )
                     
-
-                    
-                    context_summary = preprocess_context(result)
+                    context_summary, video_urls = preprocess_context(result)
                     state["context"] = context_summary if context_summary else "No context found"
+                    state["video_urls"] = video_urls  # NEW: Store video URLs in state
                     
                     # Log retrieval summary
-                    logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars")
+                    logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars, {len(video_urls)} video URLs")
                     
                     # Enhanced output with detailed retrieval info
                     span.update(output={
                         "result_count": len(result) if result else 0,
                         "context_length": len(context_summary),
                         "context_preview": context_summary[:200] + "..." if len(context_summary) > 200 else context_summary,
+                        "video_urls_count": len(video_urls),
                         "tenant_id": tenant_id,
                         "module": module,
                         "role": role,
@@ -194,6 +306,7 @@ def create_rag_flow():
                 except Exception as e:
                     span.update(exception=e)
                     state["context"] = "Retrieval error"
+                    state["video_urls"] = []  # NEW: Empty video URLs on error
                     span.update(output={
                         "result_count": 0,
                         "error": str(e),
@@ -209,18 +322,18 @@ def create_rag_flow():
                     query=user_input,
                     module=module,
                     role=role,
-                    top_k=3
+                    top_k=MAX_CHUNKS_PER_QUERY
                 )
                 
-
-                
-                context_summary = preprocess_context(result)
+                context_summary, video_urls = preprocess_context(result)
                 state["context"] = context_summary if context_summary else "No context found"
+                state["video_urls"] = video_urls  # NEW: Store video URLs in state
                 
                 # Log retrieval summary
-                logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars")
+                logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars, {len(video_urls)} video URLs")
             except Exception:
                 state["context"] = "Retrieval error"
+                state["video_urls"] = []  # NEW: Empty video URLs on error
             return state
 
     def llm_node(state: dict) -> dict:
@@ -316,9 +429,8 @@ def build_prompt(state: dict, user_input: str) -> str:
     # --- PROMPT-ONLY RAG SAFETY: If context is empty, set a clear flag ---
     context = state.get('context', '')
     if not context or context.strip().lower() in ["no context found", "retrieval error"]:
-        context = "No relevant information found for this module."
-        # If module context is empty, do not include conversation history
-        memory_str = ""
+        context = "No specific documentation found for this query in the current module."
+        # Keep conversation history even when context is empty for better engagement
 
     # Determine the appropriate ending based on context and conversation state
     ending_instruction = ""
@@ -327,14 +439,13 @@ def build_prompt(state: dict, user_input: str) -> str:
     has_conversation_history = bool(memory_str.strip())
     
     if has_conversation_history:
-        ending_instruction = "Continue the conversation naturally, building on our previous discussion and providing helpful, context-aware responses."
+        ending_instruction = "Continue the conversation naturally, building on our previous discussion and providing helpful, context-aware responses based on the available documentation."
     else:
-        ending_instruction = "Engage with the user's input in a helpful and professional manner."
+        ending_instruction = "Engage with the user's input in a helpful and professional manner, focusing on the available documentation."
     
     prompt = (
         "You are a smart, friendly, and professional AI assistant built for a modern SaaS platform. "
-        "CRITICAL INSTRUCTION: You MUST base your responses PRIMARILY on the provided module context below. "
-        "If the context contains specific information, use ONLY that information. Do NOT make up or hallucinate additional details.\n\n"
+        "Your goal is to help users with their questions based ONLY on the provided documentation.\n\n"
         "Instructions:\n"
         "- CRITICAL: Base your response STRICTLY on the module context provided below.\n"
         "- If the context is insufficient or unclear, say so rather than making assumptions.\n"
@@ -350,10 +461,11 @@ def build_prompt(state: dict, user_input: str) -> str:
         "- IMPORTANT: You have access to conversation history below. Use it to provide context-aware responses.\n"
         "- Be conversational and engaging, but stay focused on the user's needs.\n"
         "- IMPORTANT: Respond naturally to user inputs, understanding context from conversation history.\n"
-        "- IMPORTANT: Adapt your response style based on the user's preferences below.\n\n"
+        "- IMPORTANT: Adapt your response style based on the user's preferences below.\n"
+        "- When you don't have specific information, ask clarifying questions to help find relevant content within the available documentation.\n\n"
         f"User Role (if known): {state.get('role', 'unknown')}\n"
         f"User Preferences: {user_preferences if user_preferences else 'No specific preferences found'}\n"
-        f"MODULE CONTEXT (REQUIRED - Base your response on this):\n{context}\n"
+        f"MODULE CONTEXT:\n{context}\n"
 
     )
     if memory_str:
@@ -361,21 +473,29 @@ def build_prompt(state: dict, user_input: str) -> str:
     prompt += (
         f"User Input:\n{user_input}\n\n"
         f"REMEMBER: Base your response ONLY on the module context provided above. "
-        f"If the context doesn't contain enough information, say so clearly. "
-        f"Do not add details that are not in the provided context.\n\n"
+        f"If the context doesn't contain enough information, say so clearly and ask clarifying questions to help find relevant content within your documentation. "
+        f"Do not suggest topics outside of your available documentation.\n\n"
         f"{ending_instruction}"
     )
     return prompt
 
 # --- FASTAPI ENDPOINTS ---
 @app.post("/query")
-async def query_rag(request: QueryRequest):
+async def query_rag(
+    request: QueryRequest,
+    validated_request: SanitizedQueryRequest = Depends(validate_query_request),
+    fastapi_request: Request = None
+):
+    # Check rate limit after validation
+    if fastapi_request:
+        check_rate_limit(fastapi_request, validated_request.tenant_id, validated_request.session_id)
+    # Use validated and sanitized data
     state = {
-        "input": request.input,
-        "tenant_id": request.tenant_id,
-        "session_id": request.session_id,
-        "module": request.module or DEFAULT_MODULE,
-        "role": request.role # Pass role to the state
+        "input": validated_request.input,
+        "tenant_id": validated_request.tenant_id,
+        "session_id": validated_request.session_id,
+        "module": validated_request.module or DEFAULT_MODULE,
+        "role": validated_request.role
     }
     state = rag_flow_executor.invoke(state)
     full_response = state.get("llm_response", "[ERROR: No LLM response]")
@@ -384,7 +504,7 @@ async def query_rag(request: QueryRequest):
     # 1. Store in per-tenant storage (existing system)
     store_memory(
         tenant_id=state["tenant_id"],
-        user_input=request.input,
+        user_input=validated_request.input,
         response_text=full_response,
         session_id=state["session_id"],
         module=state["module"],
@@ -396,7 +516,7 @@ async def query_rag(request: QueryRequest):
         mem0_success = store_user_memory(
             tenant_id=state["tenant_id"],
             user_id=state["session_id"],  # Use session_id as user_id
-            user_input=request.input,
+            user_input=validated_request.input,
             response_text=full_response,
             session_id=state["session_id"],
             module=state["module"],
@@ -409,16 +529,44 @@ async def query_rag(request: QueryRequest):
     except Exception as e:
         logger.error(f"Exception storing user memory in Mem0: {e}")
     
-    return {"response": full_response}
+    # Get video URLs from state
+    video_urls = state.get("video_urls", [])
+    
+    # Return response with video URLs
+    return {
+        "response": full_response,
+        "video_urls": video_urls  # NEW: Include video URLs in response
+    }
 
 
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
 
+@app.get("/metrics")
+async def get_metrics():
+    """Get application metrics."""
+    return metrics_middleware.get_metrics()
+
 
 @app.get("/welcome")
-async def welcome(tenant_id: str = Query(..., description="Tenant ID")):
+async def welcome(
+    tenant_id: str = Query(..., description="Tenant ID"),
+    request: Request = None
+):
+    # Validate and sanitize tenant_id
+    try:
+        from core.validation import sanitize_text
+        sanitized_tenant_id = sanitize_text(tenant_id, max_length=50)
+        if not sanitized_tenant_id:
+            raise HTTPException(status_code=400, detail="Invalid tenant ID")
+        tenant_id = sanitized_tenant_id.upper()  # Normalize to uppercase
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid tenant ID: {str(e)}")
+    
+    # Check rate limit if request is available
+    if request:
+        check_rate_limit(request, tenant_id, "welcome")
     """
     Welcome endpoint for tenants with all sample questions.
     
@@ -473,23 +621,23 @@ async def welcome(tenant_id: str = Query(..., description="Tenant ID")):
         }
 
 # --- CLEANUP ENDPOINTS ---
-class ClearConversationsRequest(BaseModel):
-    tenant_id: str
-    session_id: str
-    model_config = ConfigDict(extra="forbid")
-
-
-
 @app.post("/clear-conversations")
-async def clear_conversations(request: ClearConversationsRequest):
+async def clear_conversations(
+    request: ClearConversationsRequest,
+    validated_request: SanitizedClearRequest = Depends(validate_clear_request),
+    fastapi_request: Request = None
+):
+    # Check rate limit after validation
+    if fastapi_request:
+        check_rate_limit(fastapi_request, validated_request.tenant_id, validated_request.session_id)
     """
     Clear all Weaviate conversation memories for a specific session.
     Preserves Mem0 memories - only cleans up Weaviate conversation history.
     """
     try:
         result = clear_session_conversations(
-            tenant_id=request.tenant_id,
-            session_id=request.session_id
+            tenant_id=validated_request.tenant_id,
+            session_id=validated_request.session_id
         )
         
         if result["success"]:
@@ -497,15 +645,15 @@ async def clear_conversations(request: ClearConversationsRequest):
                 "success": True,
                 "message": result["message"],
                 "deleted_count": result["deleted_count"],
-                "tenant_id": request.tenant_id,
-                "session_id": request.session_id
+                "tenant_id": validated_request.tenant_id,
+                "session_id": validated_request.session_id
             }
         else:
             return {
                 "success": False,
                 "error": result["error"],
-                "tenant_id": request.tenant_id,
-                "session_id": request.session_id
+                "tenant_id": validated_request.tenant_id,
+                "session_id": validated_request.session_id
             }
             
     except Exception as e:
@@ -513,8 +661,8 @@ async def clear_conversations(request: ClearConversationsRequest):
         return {
             "success": False,
             "error": f"Internal server error: {str(e)}",
-            "tenant_id": request.tenant_id,
-            "session_id": request.session_id
+            "tenant_id": validated_request.tenant_id,
+            "session_id": validated_request.session_id
         }
 
 

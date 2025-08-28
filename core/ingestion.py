@@ -6,6 +6,7 @@ from typing import Dict
 
 from utils.pdf_processing import extract_chunks_from_pdf
 from services.per_tenant_storage import store_document_chunks, initialize_per_tenant_storage
+from utils.video_mapping import get_video_url_for_document  # NEW: Import video mapping utility
 
 import warnings
 warnings.filterwarnings("ignore", message="builtin type swigvarlink has no __module__ attribute")
@@ -13,13 +14,11 @@ warnings.filterwarnings("ignore", message="builtin type swigvarlink has no __mod
 
 HASH_FILE = ".ingest_hashes.json"
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-logger = logging.getLogger(__name__)
+from core.logging_config import initialize_logging, get_logger
+
+# Initialize logging
+initialize_logging()
+logger = get_logger(__name__)
  
 def compute_file_hash(file_path: Path) -> str:
     """Compute SHA256 hash of a file."""
@@ -97,6 +96,13 @@ def ingest_all_documents(base_path: str = "data") -> None:
                     logger.info(f"Ingesting file: {rel_path}")
                     chunk_data = extract_chunks_from_pdf(str(pdf_file))
                     
+                    # Get video URL for this document
+                    video_url = get_video_url_for_document(tenant_id, pdf_file.name)
+                    if video_url:
+                        logger.info(f"Found video URL for {pdf_file.name}: {video_url}")
+                    else:
+                        logger.info(f"No video URL found for {pdf_file.name}")
+                    
                     # Convert to the format expected by store_document_chunks
                     chunk_objs = []
                     for chunk_info in chunk_data:
@@ -116,7 +122,7 @@ def ingest_all_documents(base_path: str = "data") -> None:
                             "metadata": enhanced_metadata
                         })
 
-                    store_document_chunks(tenant_id, chunk_objs, module, role)
+                    store_document_chunks(tenant_id, chunk_objs, module, role, video_url=video_url)
                     updated_hashes[rel_path] = current_hash
                     any_files_ingested = True
 

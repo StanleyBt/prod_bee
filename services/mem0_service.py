@@ -136,10 +136,16 @@ def get_user_context(
         if not result or not result.get('results'):
             return ""
         
-        # Let Mem0's natural language capabilities handle context extraction
+        # Extract user preferences and patterns from their queries
+        # Focus on understanding what topics the user is interested in
         context_parts = []
         for memory in result.get('results', []):
-            context_parts.append(memory.get('memory', ''))
+            memory_text = memory.get('memory', '')
+            # Only include user query patterns, not bot responses
+            if memory_text and memory_text.startswith('User asked about:'):
+                # Extract the actual query topic
+                query_part = memory_text.replace('User asked about: ', '')
+                context_parts.append(query_part)
         
         return " ".join(context_parts)
     except Exception as e:
@@ -165,8 +171,9 @@ def store_user_memory(
     try:
         mem0_user_id = _get_user_id(tenant_id, user_id, session_id, module, role)
         
-        # Create a natural language memory entry
-        memory_text = f"User asked: {user_input}. Assistant responded: {response_text}"
+        # Store user interaction pattern for preference learning
+        # Focus on what the user is asking about, not the bot's response
+        memory_text = f"User asked about: {user_input}"
         
         # Store in Mem0
         result = mem0_client.add(

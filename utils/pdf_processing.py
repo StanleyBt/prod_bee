@@ -55,18 +55,43 @@ def extract_text_from_pdf(pdf_path: str) -> dict:
 
 def chunk_text(text: str, chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_CHUNK_OVERLAP) -> list[str]:
     """
-    Split text into chunks of chunk_size words with overlap.
+    Split text into chunks of chunk_size characters with overlap, respecting word boundaries.
     """
-    words = text.split()
-    logger.info(f"Splitting text into chunks with chunk size {chunk_size} and overlap {overlap}")
+    logger.info(f"Splitting text into chunks with chunk size {chunk_size} chars and overlap {overlap} chars")
     chunks = []
+    
+    if len(text) <= chunk_size:
+        return [text]
+    
     start = 0
-    while start < len(words):
-        end = min(start + chunk_size, len(words))
-        chunk = " ".join(words[start:end])
-        chunks.append(chunk)
-        logger.debug(f"Created chunk {len(chunks)} with {end - start} words")
-        start += chunk_size - overlap
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        
+        # If we're not at the end of the text, try to break at a word boundary
+        if end < len(text):
+            # Look for the last space or punctuation within the last 100 characters
+            search_start = max(start + chunk_size - 100, start)
+            last_space = text.rfind(' ', search_start, end)
+            last_period = text.rfind('.', search_start, end)
+            last_newline = text.rfind('\n', search_start, end)
+            
+            # Choose the best break point
+            break_point = max(last_space, last_period, last_newline)
+            if break_point > start + chunk_size // 2:  # Only use if it's not too early
+                end = break_point + 1
+        
+        chunk = text[start:end].strip()
+        if chunk:  # Only add non-empty chunks
+            chunks.append(chunk)
+            logger.debug(f"Created chunk {len(chunks)} with {len(chunk)} characters")
+        
+        # Move start position, accounting for overlap
+        start = max(start + 1, end - overlap)
+        
+        # Safety check to prevent infinite loops
+        if start >= len(text):
+            break
+    
     logger.info(f"Total chunks created: {len(chunks)}")
     return chunks
 

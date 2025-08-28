@@ -26,13 +26,11 @@ from services.llm import test_llm_connection # To test LLM connection before sta
 from core.ingestion import ingest_all_documents # The actual ingestion logic
 
 
-# Basic logging setup for the main script
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-logger = logging.getLogger(__name__)
+from core.logging_config import initialize_logging, get_logger
+
+# Initialize logging
+initialize_logging()
+logger = get_logger(__name__)
 
 def pre_flight_checks_and_ingestion():
     """

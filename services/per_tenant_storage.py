@@ -154,7 +154,8 @@ def store_document_chunks(
     tenant_id: str,
     chunks: List[Dict],
     module: Optional[str] = None,
-    role: Optional[str] = None
+    role: Optional[str] = None,
+    video_url: Optional[str] = None  # NEW: Optional video URL parameter
 ) -> bool:
     """
     Store document chunks in tenant-specific vector collection.
@@ -192,6 +193,10 @@ def store_document_chunks(
             # Get metadata from chunk
             chunk_metadata = chunk.get('metadata', {})
             
+            # Add video URL to metadata if provided
+            if video_url:
+                chunk_metadata['video_url'] = video_url
+            
             # Insert with vector and enhanced metadata
             collection.data.insert(
                 properties={
@@ -206,7 +211,7 @@ def store_document_chunks(
                     'word_count': chunk_metadata.get('word_count', 0),
                     'chunk_index': chunk_metadata.get('chunk_index', 0),
                     'total_chunks': chunk_metadata.get('total_chunks', 1),
-                    'created_at': datetime.now(timezone.utc).isoformat()
+                    'created_at': datetime.now(timezone.utc).isoformat(),
                 },
                 vector=vector
             )
@@ -264,9 +269,18 @@ def retrieve_document_chunks(
             obj_module = obj.properties.get('module')
             obj_role = obj.properties.get('role')
             
-            if (module is None or obj_module == module) and (role is None or obj_role == role):
+            if (module is None or obj_module.lower() == module.lower()) and (role is None or obj_role.lower() == role.lower()):
                 content = obj.properties.get('content', '')
                 metadata = obj.properties.get('metadata', '')
+                
+                # Extract video URL from metadata
+                video_url = ''
+                try:
+                    import ast
+                    metadata_dict = ast.literal_eval(metadata) if metadata else {}
+                    video_url = metadata_dict.get('video_url', '')
+                except:
+                    pass
                 
                 # Extract document information
                 document_name = obj.properties.get('document_name', 'Unknown')
@@ -276,11 +290,17 @@ def retrieve_document_chunks(
                 chunk_index = obj.properties.get('chunk_index', 0)
                 total_chunks = obj.properties.get('total_chunks', 1)
                 
-                # Create enhanced context
+                # Create enhanced context with video URL
                 if total_chunks == 1:
-                    context = f"[Document: {document_name} | File: {filename} | Pages: {page_count} | Words: {word_count}]"
+                    context = f"[Document: {document_name} | File: {filename} | Pages: {page_count} | Words: {word_count}"
                 else:
-                    context = f"[Document: {document_name} | File: {filename} | Chunk {chunk_index + 1}/{total_chunks} | Pages: {page_count} | Words: {word_count}]"
+                    context = f"[Document: {document_name} | File: {filename} | Chunk {chunk_index + 1}/{total_chunks} | Pages: {page_count} | Words: {word_count}"
+                
+                # Add video URL to context if available
+                if video_url:
+                    context += f" | Video: {video_url}"
+                
+                context += "]"
                 
                 # Add document context to content
                 if content:
@@ -292,6 +312,9 @@ def retrieve_document_chunks(
     except Exception as e:
         logger.error(f"Failed to retrieve document chunks for tenant {tenant_id}: {e}")
         return []
+
+
+
 
 def store_memory(
     tenant_id: str,
@@ -350,8 +373,6 @@ def store_memory(
                 pass
 
 
-
-
 def retrieve_memories(
     tenant_id: str,
     session_id: str,  # required, used as user_id
@@ -379,12 +400,12 @@ def retrieve_memories(
         filters = weaviate.classes.query.Filter.by_property("session_id").equal(session_id)
         
         if module:
-            # Add module filter
+            # Add module filter (Weaviate stores exact case, so we match exactly)
             module_filter = weaviate.classes.query.Filter.by_property("module").equal(module)
             filters = filters & module_filter
         
         if role:
-            # Add role filter
+            # Add role filter (Weaviate stores exact case, so we match exactly)
             role_filter = weaviate.classes.query.Filter.by_property("role").equal(role)
             filters = filters & role_filter
         

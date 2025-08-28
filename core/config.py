@@ -37,6 +37,11 @@ DEFAULT_MODULE = "default"
 DEFAULT_SESSION_ID = "default_session"
 
 # Document Processing Settings
-DEFAULT_CHUNK_SIZE = 100000  # Very large chunk size to effectively create single chunks per document
+# Original single chunk per document logic for user manuals
+DEFAULT_CHUNK_SIZE = 50000   # Large chunk size for single chunk per document
 DEFAULT_CHUNK_OVERLAP = 0    # No overlap since we want single chunks
-SINGLE_CHUNK_PER_DOCUMENT = True  # Flag to enable single chunk per document mode
+SINGLE_CHUNK_PER_DOCUMENT = True  # Original: single chunk per document
+
+# Context limits for RAG
+MAX_CONTEXT_CHARS = 30000    # Maximum context length in characters (roughly 7500 tokens)
+MAX_CHUNKS_PER_QUERY = 3     # Maximum number of chunks to retrieve per query
