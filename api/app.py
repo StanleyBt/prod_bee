@@ -218,16 +218,15 @@ def create_rag_flow():
         role = state.get("role", "")
         user_input = state["input"]
 
-        def preprocess_context(chunks: List[str], max_chars: int = MAX_CONTEXT_CHARS) -> tuple[str, List[str]]:
+        def preprocess_context(chunks: List[str], max_chars: int = MAX_CONTEXT_CHARS) -> tuple[str, List[dict]]:
             if not chunks:
                 return "", []
             
-            # Get video URLs from mapping file for this tenant
-            from utils.video_mapping import load_video_mapping
-            video_mapping = load_video_mapping(tenant_id)
+            # Get video segments from mapping file for this tenant
+            from utils.video_mapping import get_video_segment_for_document
             
-            # Extract document filenames from chunks and get their video URLs
-            video_urls = []
+            # Extract document filenames from chunks and get their video segments
+            video_segments = []
             for chunk in chunks:
                 # Extract filename from chunk context
                 if "File:" in chunk:
@@ -240,11 +239,14 @@ def create_rag_flow():
                             file_end = len(chunk)
                         filename = chunk[file_start:file_end].strip()
                         
-                        # Get video URL from mapping
-                        if filename in video_mapping:
-                            video_url = video_mapping[filename]
-                            if video_url and video_url not in video_urls:
-                                video_urls.append(video_url)
+                        # Get video segment from mapping
+                        video_segment = get_video_segment_for_document(tenant_id, filename, user_input)
+                        if video_segment:
+                            # Add document info to segment
+                            video_segment["document"] = filename
+                            # Avoid duplicates
+                            if not any(seg["url"] == video_segment["url"] and seg["start"] == video_segment["start"] for seg in video_segments):
+                                video_segments.append(video_segment)
                     except Exception as e:
                         logger.debug(f"Failed to extract filename from chunk: {e}")
             
@@ -262,10 +264,10 @@ def create_rag_flow():
                 current_length += chunk_length
             
             if combined_chunks:
-                return " ".join(combined_chunks), video_urls
+                return " ".join(combined_chunks), video_segments
             else:
                 # If even the first chunk is too long, truncate it
-                return chunks[0][:max_chars] + "..." if chunks else "", video_urls
+                return chunks[0][:max_chars] + "..." if chunks else "", video_segments
 
         if langfuse:
             with langfuse.start_as_current_span(name="VectorRetrieval") as span:
@@ -285,19 +287,19 @@ def create_rag_flow():
                         top_k=MAX_CHUNKS_PER_QUERY
                     )
                     
-                    context_summary, video_urls = preprocess_context(result)
+                    context_summary, video_segments = preprocess_context(result)
                     state["context"] = context_summary if context_summary else "No context found"
-                    state["video_urls"] = video_urls  # NEW: Store video URLs in state
+                    state["video_segments"] = video_segments  # NEW: Store video segments in state
                     
                     # Log retrieval summary
-                    logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars, {len(video_urls)} video URLs")
+                    logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars, {len(video_segments)} video segments")
                     
                     # Enhanced output with detailed retrieval info
                     span.update(output={
                         "result_count": len(result) if result else 0,
                         "context_length": len(context_summary),
                         "context_preview": context_summary[:200] + "..." if len(context_summary) > 200 else context_summary,
-                        "video_urls_count": len(video_urls),
+                        "video_segments_count": len(video_segments),
                         "tenant_id": tenant_id,
                         "module": module,
                         "role": role,
@@ -306,7 +308,7 @@ def create_rag_flow():
                 except Exception as e:
                     span.update(exception=e)
                     state["context"] = "Retrieval error"
-                    state["video_urls"] = []  # NEW: Empty video URLs on error
+                    state["video_segments"] = []  # NEW: Empty video segments on error
                     span.update(output={
                         "result_count": 0,
                         "error": str(e),
@@ -325,15 +327,15 @@ def create_rag_flow():
                     top_k=MAX_CHUNKS_PER_QUERY
                 )
                 
-                context_summary, video_urls = preprocess_context(result)
+                context_summary, video_segments = preprocess_context(result)
                 state["context"] = context_summary if context_summary else "No context found"
-                state["video_urls"] = video_urls  # NEW: Store video URLs in state
+                state["video_segments"] = video_segments  # NEW: Store video segments in state
                 
                 # Log retrieval summary
-                logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars, {len(video_urls)} video URLs")
+                logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars, {len(video_segments)} video segments")
             except Exception:
                 state["context"] = "Retrieval error"
-                state["video_urls"] = []  # NEW: Empty video URLs on error
+                state["video_segments"] = []  # NEW: Empty video segments on error
             return state
 
     def llm_node(state: dict) -> dict:
@@ -529,13 +531,13 @@ async def query_rag(
     except Exception as e:
         logger.error(f"Exception storing user memory in Mem0: {e}")
     
-    # Get video URLs from state
-    video_urls = state.get("video_urls", [])
+    # Get video segments from state
+    video_segments = state.get("video_segments", [])
     
-    # Return response with video URLs
+    # Return response with video segments
     return {
         "response": full_response,
-        "video_urls": video_urls  # NEW: Include video URLs in response
+        "video_segments": video_segments  # NEW: Include video segments in response
     }
 
 

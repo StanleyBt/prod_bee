@@ -48,14 +48,133 @@ def get_video_url_for_document(tenant_id: str, document_filename: str) -> Option
         Video URL if found, None otherwise
     """
     mapping = load_video_mapping(tenant_id)
-    video_url = mapping.get(document_filename)
+    video_info = mapping.get(document_filename)
     
-    if video_url:
-        logger.debug(f"Found video URL for {document_filename}: {video_url}")
+    if video_info:
+        # Handle new format with segments
+        if isinstance(video_info, dict) and "video_url" in video_info:
+            video_url = video_info["video_url"]
+        # Handle old format (simple string)
+        elif isinstance(video_info, str):
+            video_url = video_info
+        else:
+            video_url = None
+            
+        if video_url:
+            logger.debug(f"Found video URL for {document_filename}: {video_url}")
+        else:
+            logger.debug(f"No video URL found for {document_filename}")
+        
+        return video_url
     else:
         logger.debug(f"No video URL found for {document_filename}")
+        return None
+
+def get_video_segment_for_document(tenant_id: str, document_filename: str, user_query: str) -> Optional[dict]:
+    """
+    Get video segment for a specific document based on user query.
     
-    return video_url
+    Args:
+        tenant_id: The tenant ID
+        document_filename: The filename of the document
+        user_query: The user's query to match against segments
+        
+    Returns:
+        Dictionary with video_url, start time, and topic if found, None otherwise
+    """
+    mapping = load_video_mapping(tenant_id)
+    video_info = mapping.get(document_filename)
+    
+    if not video_info:
+        return None
+    
+    # Handle old format (simple string)
+    if isinstance(video_info, str):
+        return {
+            "url": video_info,
+            "start": 0,
+            "topic": "full_video"
+        }
+    
+    # Handle new format with segments
+    if isinstance(video_info, dict) and "video_url" in video_info:
+        video_url = video_info["video_url"]
+        segments = video_info.get("segments", {})
+        
+        if not segments:
+            return {
+                "url": video_url,
+                "start": 0,
+                "topic": "full_video"
+            }
+        
+        # Find best matching segment
+        best_segment = find_best_segment(user_query, segments)
+        if best_segment:
+            return {
+                "url": video_url,
+                "start": best_segment["start"],
+                "topic": best_segment["topic"]
+            }
+        else:
+            return {
+                "url": video_url,
+                "start": 0,
+                "topic": "full_video"
+            }
+    
+    return None
+
+def find_best_segment(user_query: str, segments: dict) -> Optional[dict]:
+    """
+    Find the best matching segment based on user query keywords.
+    
+    Args:
+        user_query: The user's query
+        segments: Dictionary of segments with keywords
+        
+    Returns:
+        Best matching segment with topic added, or None
+    """
+    query_lower = user_query.lower()
+    best_match = None
+    best_score = 0
+    
+    for topic, segment in segments.items():
+        keywords = segment.get("keywords", [])
+        score = calculate_keyword_match(query_lower, keywords)
+        
+        if score > best_score:
+            best_score = score
+            best_match = {
+                "start": segment["start"],
+                "topic": topic,
+                "keywords": keywords
+            }
+    
+    # Only return if we have a reasonable match (at least 1 keyword)
+    return best_match if best_score > 0 else None
+
+def calculate_keyword_match(query: str, keywords: list) -> int:
+    """
+    Calculate how many keywords from the segment match the user query.
+    
+    Args:
+        query: The user's query (lowercase)
+        keywords: List of keywords for the segment
+        
+    Returns:
+        Number of matching keywords
+    """
+    if not keywords:
+        return 0
+    
+    matches = 0
+    for keyword in keywords:
+        if keyword.lower() in query:
+            matches += 1
+    
+    return matches
 
 def save_video_mapping(tenant_id: str, mapping: Dict[str, str]) -> bool:
     """
