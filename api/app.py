@@ -130,6 +130,38 @@ def create_rag_flow():
     graph = Graph()
     langfuse = get_langfuse_client()
 
+    def _retrieve_memories_and_preferences(tenant_id: str, session_id: str, module: str, role: str) -> tuple[list, str]:
+        """
+        Retrieve conversation memories and user preferences.
+        Returns (memories, user_preferences) tuple.
+        """
+        # Retrieve conversation memories
+        memories = retrieve_memories(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            module=module,
+            role=role,
+            max_memories=10  # Limit to 10 most recent memories
+        )
+        
+        # Retrieve user preferences using Mem0
+        user_preferences = ""
+        try:
+            user_context = get_user_context(
+                tenant_id=tenant_id,
+                user_id=session_id,  # Use session_id as user_id
+                session_id=session_id,
+                module=module,
+                role=role
+            )
+            user_preferences = user_context
+        except Exception as e:
+            logger.error(f"User preference retrieval failed: {e}")
+            user_preferences = ""
+        
+        logger.info(f"Retrieved {len(memories)} memories and user preferences for session: {session_id}")
+        return memories, user_preferences
+
     def memory_retrieval_node(state: dict) -> dict:
         tenant_id = state.get("tenant_id", "")
         session_id = state.get("session_id", "")
@@ -145,39 +177,20 @@ def create_rag_flow():
                     "role": role
                 })
                 try:
-                    # Retrieve conversation memories
-                    memories = retrieve_memories(
-                        tenant_id=tenant_id,
-                        session_id=session_id,
-                        module=module,
-                        role=role,
-                        max_memories=10  # Limit to 10 most recent memories
+                    memories, user_preferences = _retrieve_memories_and_preferences(
+                        tenant_id, session_id, module, role
                     )
                     state["memories"] = memories
-                    
-                    # Retrieve user preferences using Mem0
-                    try:
-                        user_context = get_user_context(
-                            tenant_id=tenant_id,
-                            user_id=session_id,  # Use session_id as user_id
-                            session_id=session_id,
-                            module=module,
-                            role=role
-                        )
-                        state["user_preferences"] = user_context
-                    except Exception as e:
-                        logger.error(f"User preference retrieval failed: {e}")
-                        state["user_preferences"] = ""
+                    state["user_preferences"] = user_preferences
                     
                     span.update(output={
                         "memory_count": len(memories),
                         "memories": memories[:3] if memories else [],  # First 3 for context
-                        "user_preferences": state.get("user_preferences", ""),
+                        "user_preferences": user_preferences,
                         "session_id": session_id,
                         "module": module,
                         "role": role
                     })
-                    logger.info(f"Retrieved {len(memories)} memories and user preferences for session: {session_id}")
                 except Exception as e:
                     span.update(exception=e)
                     state["memories"] = []
@@ -185,31 +198,16 @@ def create_rag_flow():
                     logger.error(f"Memory retrieval failed: {e}")
                 return state
         else:
-                        # Retrieve conversation memories
-            memories = retrieve_memories(
-                tenant_id=tenant_id,
-                session_id=session_id,
-                module=module,
-                role=role,
-                max_memories=10  # Limit to 10 most recent memories
-            )
-            state["memories"] = memories
-            
-            # Retrieve user preferences using Mem0
             try:
-                user_context = get_user_context(
-                    tenant_id=tenant_id,
-                    user_id=session_id,  # Use session_id as user_id
-                    session_id=session_id,
-                    module=module,
-                    role=role
+                memories, user_preferences = _retrieve_memories_and_preferences(
+                    tenant_id, session_id, module, role
                 )
-                state["user_preferences"] = user_context
+                state["memories"] = memories
+                state["user_preferences"] = user_preferences
             except Exception as e:
-                logger.error(f"User preference retrieval failed: {e}")
+                state["memories"] = []
                 state["user_preferences"] = ""
-            
-            logger.info(f"Retrieved {len(memories)} memories and user preferences for session: {session_id}")
+                logger.error(f"Memory retrieval failed: {e}")
             return state
 
     def retriever_node(state: dict) -> dict:
@@ -218,12 +216,68 @@ def create_rag_flow():
         role = state.get("role", "")
         user_input = state["input"]
 
+        def _get_video_segment_from_mapping(video_mapping: dict, document_filename: str, user_query: str) -> Optional[dict]:
+            """
+            Get video segment from pre-loaded mapping without file I/O.
+            
+            Args:
+                video_mapping: Pre-loaded video mapping dictionary
+                document_filename: The filename of the document
+                user_query: The user's query to match against segments
+                
+            Returns:
+                Dictionary with video_url, start time, and topic if found, None otherwise
+            """
+            video_info = video_mapping.get(document_filename)
+            
+            if not video_info:
+                return None
+            
+            # Handle old format (simple string)
+            if isinstance(video_info, str):
+                return {
+                    "url": video_info,
+                    "start": 0,
+                    "topic": "full_video"
+                }
+            
+            # Handle new format with segments
+            if isinstance(video_info, dict) and "video_url" in video_info:
+                video_url = video_info["video_url"]
+                segments = video_info.get("segments", {})
+                
+                if not segments:
+                    return {
+                        "url": video_url,
+                        "start": 0,
+                        "topic": "full_video"
+                    }
+                
+                # Find best matching segment
+                from utils.video_mapping import find_best_segment
+                best_segment = find_best_segment(user_query, segments)
+                if best_segment:
+                    return {
+                        "url": video_url,
+                        "start": best_segment["start"],
+                        "topic": best_segment["topic"]
+                    }
+                else:
+                    return {
+                        "url": video_url,
+                        "start": 0,
+                        "topic": "full_video"
+                    }
+            
+            return None
+
         def preprocess_context(chunks: List[str], max_chars: int = MAX_CONTEXT_CHARS) -> tuple[str, List[dict]]:
             if not chunks:
                 return "", []
             
-            # Get video segments from mapping file for this tenant
-            from utils.video_mapping import get_video_segment_for_document
+            # Load video mapping once for this tenant (cached)
+            from utils.video_mapping import load_video_mapping, find_best_segment
+            video_mapping = load_video_mapping(tenant_id)
             
             # Extract document filenames from chunks and get their video segments
             video_segments = []
@@ -239,8 +293,8 @@ def create_rag_flow():
                             file_end = len(chunk)
                         filename = chunk[file_start:file_end].strip()
                         
-                        # Get video segment from mapping
-                        video_segment = get_video_segment_for_document(tenant_id, filename, user_input)
+                        # Get video segment from cached mapping
+                        video_segment = _get_video_segment_from_mapping(video_mapping, filename, user_input)
                         if video_segment:
                             # Add document info to segment
                             video_segment["document"] = filename
@@ -395,91 +449,7 @@ rag_flow_executor = create_rag_flow()
 
 
 # --- PROMPT BUILDER ---
-def build_prompt(state: dict, user_input: str) -> str:
-    memories = state.get("memories", [])
-    user_preferences = state.get("user_preferences", "")
-    
-    # Debug logging to see what's being included
-    logger.info(f"Building prompt with {len(memories)} memories and user preferences: {user_preferences[:100] if user_preferences else 'None'}")
-    if memories:
-        logger.info(f"Memory structure: {memories[0] if memories else 'No memories'}")
-    
-    # Handle memory format - use only the most recent memories
-    memory_str = ""
-    
-    if memories:
-        memory_entries = []
-        # Use only the 3 most recent memories to keep context focused
-        # Memories are already in descending order (newest first), so take first 3
-        recent_memories = memories[:3] if len(memories) > 3 else memories
-        
-        # No hardcoded step detection - let the LLM handle conversation flow naturally
-        
-        for memory in recent_memories:
-            if isinstance(memory, dict) and 'user' in memory and 'bot' in memory:
-                user_msg = str(memory.get('user', ''))
-                bot_msg = str(memory.get('bot', ''))
-                memory_entries.append(f"Previous conversation:\nUser: {user_msg}\nAssistant: {bot_msg}")
-        
-        memory_str = "\n".join(memory_entries)
-    
-    if memory_str:
-        logger.info(f"Conversation history preview: {memory_str[:200]}...")
-    else:
-        logger.info("No conversation history found")
-
-    # --- PROMPT-ONLY RAG SAFETY: If context is empty, set a clear flag ---
-    context = state.get('context', '')
-    if not context or context.strip().lower() in ["no context found", "retrieval error"]:
-        context = "No specific documentation found for this query in the current module."
-        # Keep conversation history even when context is empty for better engagement
-
-    # Determine the appropriate ending based on context and conversation state
-    ending_instruction = ""
-    
-    # Simple, natural conversation flow
-    has_conversation_history = bool(memory_str.strip())
-    
-    if has_conversation_history:
-        ending_instruction = "Continue the conversation naturally, building on our previous discussion and providing helpful, context-aware responses based on the available documentation."
-    else:
-        ending_instruction = "Engage with the user's input in a helpful and professional manner, focusing on the available documentation."
-    
-    prompt = (
-        "You are a smart, friendly, and professional AI assistant built for a modern SaaS platform. "
-        "Your goal is to help users with their questions based ONLY on the provided documentation.\n\n"
-        "Instructions:\n"
-        "- CRITICAL: Base your response STRICTLY on the module context provided below.\n"
-        "- If the context is insufficient or unclear, say so rather than making assumptions.\n"
-        "- Understand the user's intent using context and conversation history.\n"
-        "- Respond clearly and concisely using markdown formatting — include bullet points, numbered steps, or headings if useful.\n"
-        "- Avoid overwhelming users — provide just enough detail to address their current need.\n"
-        "- Adapt your tone to be professional yet approachable.\n"
-        "- Respect the user's role (e.g., employee, manager, vendor, HR) to customize instructions.\n"
-        "- Keep responses relevant — don't repeat earlier answers unless needed for clarity.\n"
-        "- Your responses should be modular and context-aware.\n"
-        "- IMPORTANT: If the module context does not contain relevant information, do NOT attempt to answer the user's question. Instead, politely inform the user that you cannot answer and ask them to rephrase or ask about the selected module.\n"
-        "- Focus your responses strictly on the user's selected module and avoid discussing other modules.\n"
-        "- IMPORTANT: You have access to conversation history below. Use it to provide context-aware responses.\n"
-        "- Be conversational and engaging, but stay focused on the user's needs.\n"
-        "- IMPORTANT: Respond naturally to user inputs, understanding context from conversation history.\n"
-        "- IMPORTANT: Adapt your response style based on the user's preferences below.\n"
-        "- When you don't have specific information, ask clarifying questions to help find relevant content within the available documentation.\n\n"
-        f"User Role (if known): {state.get('role', 'unknown')}\n"
-        f"User Preferences: {user_preferences if user_preferences else 'No specific preferences found'}\n"
-        f"MODULE CONTEXT:\n{context}\n"
-
-    )
-    if memory_str:
-        prompt += f"Conversation History:\n{memory_str}\n\n"
-    prompt += (
-        f"User Input:\n{user_input}\n\n"
-        f"REMEMBER: Base your response ONLY on the module context provided above. "
-        f"If the context doesn't contain enough information, say so clearly and ask clarifying questions to help find relevant content within your documentation. "
-        f"Do not suggest topics outside of your available documentation.\n\n"
-        f"{ending_instruction}"
-    )
-    return prompt
+from utils.prompt_builder import build_prompt
 
 # --- FASTAPI ENDPOINTS ---
 @app.post("/query")
@@ -549,6 +519,47 @@ async def health_check():
 async def get_metrics():
     """Get application metrics."""
     return metrics_middleware.get_metrics()
+
+@app.get("/cache/stats")
+async def get_cache_stats():
+    """Get embedding cache statistics."""
+    try:
+        from utils.embeddings import get_embedding_cache_stats
+        stats = get_embedding_cache_stats()
+        if stats:
+            return {
+                "status": "success",
+                "cache_stats": stats
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Cache statistics not available"
+            }
+    except Exception as e:
+        logger.error(f"Error getting cache stats: {e}")
+        return {
+            "status": "error",
+            "message": f"Failed to get cache statistics: {str(e)}"
+        }
+
+@app.post("/cache/clear")
+async def clear_cache():
+    """Clear the embedding cache."""
+    try:
+        from utils.embeddings import clear_embedding_cache
+        clear_embedding_cache()
+        return {
+            "status": "success",
+            "message": "Embedding cache cleared successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error clearing cache: {e}")
+        return {
+            "status": "error",
+            "message": f"Failed to clear cache: {str(e)}"
+        }
+
 
 
 @app.get("/welcome")

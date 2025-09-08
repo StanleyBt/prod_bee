@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from services.per_tenant_storage import initialize_per_tenant_storage, close_per_tenant_storage
 from services.mem0_service import initialize_mem0_service, close_mem0_service
+from utils.embeddings import shutdown_embedding_cache
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ def signal_handler(signum, frame):
     logger.info(f"Received signal {signum}, shutting down gracefully...")
     close_per_tenant_storage()
     close_mem0_service()
+    shutdown_embedding_cache()
     sys.exit(0)
 
 # Register signal handlers for graceful shutdown
@@ -78,6 +80,13 @@ async def lifespan(app: FastAPI):
         logger.info("Mem0 service connections closed")
     except Exception as e:
         logger.error(f"Error during Mem0 service shutdown: {e}")
+
+    # Close embedding cache
+    try:
+        shutdown_embedding_cache()
+        logger.info("Embedding cache shutdown complete")
+    except Exception as e:
+        logger.error(f"Error during embedding cache shutdown: {e}")
 
     logger.info("Application shutdown complete.")
 

@@ -6,6 +6,7 @@ for context injection in prompts.
 """
 
 import logging
+import threading
 from typing import Optional
 from mem0 import Memory
 from core.config import (
@@ -26,76 +27,102 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Global Mem0 client
+# Global Mem0 client with proper resource management
 mem0_client: Optional[Memory] = None
+_client_lock = threading.Lock()
+_client_initialized = False
 
 def _ensure_mem0_cleanup():
     """
     Ensure Mem0 cleanup happens even if not explicitly called.
     """
-    global mem0_client
-    if mem0_client:
-        mem0_client = None
+    global mem0_client, _client_initialized
+    with _client_lock:
+        if mem0_client:
+            try:
+                # Mem0 doesn't have explicit close, but we can clear the reference
+                mem0_client = None
+                _client_initialized = False
+                logger.info("Mem0 client cleared during cleanup")
+            except Exception as e:
+                logger.warning(f"Error during Mem0 client cleanup: {e}")
 
 # Register cleanup function to run at exit
 atexit.register(_ensure_mem0_cleanup)
 
 def initialize_mem0_service() -> bool:
     """
-    Initialize the Mem0 service with Azure OpenAI configuration.
+    Initialize the Mem0 service with Azure OpenAI configuration and thread safety.
     """
-    global mem0_client
-    try:
-        # Validate required environment variables
-        if not all([AZURE_API_KEY, AZURE_API_BASE, AZURE_DEPLOYMENT_NAME, AZURE_EMBEDDING_DEPLOYMENT_NAME]):
-            logger.error("❌ Missing required Azure OpenAI environment variables for Mem0")
-            return False
+    global mem0_client, _client_initialized
+    
+    with _client_lock:
+        # If already initialized, return True
+        if _client_initialized and mem0_client:
+            logger.debug("Mem0 client already initialized")
+            return True
         
-        # Mem0 configuration with Azure OpenAI and Weaviate backend
-        config = {
-            "vector_store": {
-                "provider": "weaviate",
-                "config": {
-                    "collection_name": MEM0_COLLECTION_NAME,
-                    "cluster_url": os.getenv("WEAVIATE_URL", "http://localhost:8080"),
-                    "auth_client_secret": None,
-                }
-            },
-            "llm": {
-                "provider": "azure_openai",
-                "config": {
-                    "model": AZURE_DEPLOYMENT_NAME,
-                    "temperature": 0.1,
-                    "max_tokens": 100,
-                    "azure_kwargs": {
-                        "azure_deployment": AZURE_DEPLOYMENT_NAME,
-                        "api_version": AZURE_API_VERSION,
-                        "azure_endpoint": AZURE_API_BASE,
-                        "api_key": os.environ["AZURE_OPENAI_API_KEY"]
+        try:
+            # Validate required environment variables
+            if not all([AZURE_API_KEY, AZURE_API_BASE, AZURE_DEPLOYMENT_NAME, AZURE_EMBEDDING_DEPLOYMENT_NAME]):
+                logger.error("❌ Missing required Azure OpenAI environment variables for Mem0")
+                return False
+            
+            # Clear any existing client
+            if mem0_client:
+                mem0_client = None
+                _client_initialized = False
+            
+            logger.info("Initializing Mem0 service...")
+            
+            # Mem0 configuration with Azure OpenAI and Weaviate backend
+            config = {
+                "vector_store": {
+                    "provider": "weaviate",
+                    "config": {
+                        "collection_name": MEM0_COLLECTION_NAME,
+                        "cluster_url": os.getenv("WEAVIATE_URL", "http://localhost:8080"),
+                        "auth_client_secret": None,
                     }
-                }
-            },
-            "embedder": {
-                "provider": "azure_openai",
-                "config": {
-                    "model": AZURE_EMBEDDING_DEPLOYMENT_NAME,
-                    "azure_kwargs": {
-                        "azure_deployment": AZURE_EMBEDDING_DEPLOYMENT_NAME,
-                        "api_version": AZURE_EMBEDDING_API_VERSION,
-                        "azure_endpoint": AZURE_EMBEDDING_API_BASE,
-                        "api_key": os.environ["AZURE_EMBEDDING_API_KEY"],
+                },
+                "llm": {
+                    "provider": "azure_openai",
+                    "config": {
+                        "model": AZURE_DEPLOYMENT_NAME,
+                        "temperature": 0.1,
+                        "max_tokens": 100,
+                        "azure_kwargs": {
+                            "azure_deployment": AZURE_DEPLOYMENT_NAME,
+                            "api_version": AZURE_API_VERSION,
+                            "azure_endpoint": AZURE_API_BASE,
+                            "api_key": AZURE_API_KEY
+                        }
+                    }
+                },
+                "embedder": {
+                    "provider": "azure_openai",
+                    "config": {
+                        "model": AZURE_EMBEDDING_DEPLOYMENT_NAME,
+                        "azure_kwargs": {
+                            "azure_deployment": AZURE_EMBEDDING_DEPLOYMENT_NAME,
+                            "api_version": AZURE_EMBEDDING_API_VERSION,
+                            "azure_endpoint": AZURE_EMBEDDING_API_BASE,
+                            "api_key": AZURE_EMBEDDING_API_KEY,
+                        }
                     }
                 }
             }
-        }
-        
-        global mem0_client
-        mem0_client = Memory.from_config(config)
-        logger.info("Mem0 service initialized successfully")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to initialize Mem0 service: {e}")
-        return False
+            
+            mem0_client = Memory.from_config(config)
+            _client_initialized = True
+            logger.info("✅ Mem0 service initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Mem0 service: {e}")
+            mem0_client = None
+            _client_initialized = False
+            return False
 
 def _get_user_id(tenant_id: str, user_id: str, session_id: Optional[str] = None, module: Optional[str] = None, role: Optional[str] = None) -> str:
     """
@@ -194,18 +221,23 @@ def store_user_memory(
 
 def close_mem0_service():
     """
-    Close Mem0 service connections.
+    Close Mem0 service connections with thread safety.
     """
-    global mem0_client
-    try:
-        if mem0_client:
-            # Mem0 doesn't have an explicit close method, but we can clear the reference
-            # This should trigger garbage collection and close underlying connections
+    global mem0_client, _client_initialized
+    
+    with _client_lock:
+        try:
+            if mem0_client:
+                logger.info("Closing Mem0 service...")
+                # Mem0 doesn't have an explicit close method, but we can clear the reference
+                # This should trigger garbage collection and close underlying connections
+                mem0_client = None
+                _client_initialized = False
+                logger.info("✅ Mem0 service connections closed successfully")
+            else:
+                logger.info("Mem0 service was not initialized")
+        except Exception as e:
+            logger.error(f"❌ Error closing Mem0 service: {e}")
+            # Ensure client is cleared even if cleanup fails
             mem0_client = None
-            logger.info("Mem0 service connections closed")
-        else:
-            logger.info("Mem0 service was not initialized")
-    except Exception as e:
-        logger.error(f"Error closing Mem0 service: {e}")
-        # Ensure client is cleared even if cleanup fails
-        mem0_client = None
+            _client_initialized = False

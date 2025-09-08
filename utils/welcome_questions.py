@@ -8,11 +8,9 @@ import json
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional
-from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
-@lru_cache(maxsize=10)  # Cache for performance
 def load_welcome_questions(tenant_id: str) -> Dict:
     """
     Load welcome questions for a specific tenant from JSON file.

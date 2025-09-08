@@ -6,6 +6,7 @@ for each tenant for both vector storage (document chunks) and memory storage.
 """
 
 import logging
+import threading
 from typing import Optional, List, Dict, Any
 import weaviate
 from weaviate.classes.config import Property, DataType
@@ -16,21 +17,27 @@ from core.config import WEAVIATE_URL, WEAVIATE_API_KEY
 
 logger = logging.getLogger(__name__)
 
-# Global client
+# Global client with proper resource management
 weaviate_client: Optional[weaviate.WeaviateClient] = None
+_client_lock = threading.Lock()
+_client_initialized = False
 
 def _ensure_cleanup():
     """
     Ensure cleanup happens even if not explicitly called.
     This is a safety measure for garbage collection.
     """
-    global weaviate_client
-    if weaviate_client:
-        try:
-            weaviate_client.close()
-        except:
-            pass
-        weaviate_client = None
+    global weaviate_client, _client_initialized
+    with _client_lock:
+        if weaviate_client:
+            try:
+                weaviate_client.close()
+                logger.info("Weaviate client closed during cleanup")
+            except Exception as e:
+                logger.warning(f"Error during Weaviate client cleanup: {e}")
+            finally:
+                weaviate_client = None
+                _client_initialized = False
 
 # Register cleanup function to run at exit
 atexit.register(_ensure_cleanup)
@@ -38,38 +45,71 @@ atexit.register(_ensure_cleanup)
 
 def initialize_per_tenant_storage() -> bool:
     """
-    Initialize the per-tenant storage service.
+    Initialize the per-tenant storage service with thread safety and health checks.
     """
-    global weaviate_client
-    try:
-        # Close any existing connection first
-        if weaviate_client:
-            try:
-                weaviate_client.close()
-            except:
-                pass
-            weaviate_client = None
-        
-        weaviate_client = weaviate.connect_to_local()
-        if weaviate_client.is_ready():
-            version_info = weaviate_client.get_meta()
-            logger.info(f"Connected to Weaviate version: {version_info.get('version', 'Unknown')}")
+    global weaviate_client, _client_initialized
+    
+    with _client_lock:
+        # If already initialized and healthy, return True
+        if _client_initialized and weaviate_client and _is_client_healthy():
+            logger.debug("Weaviate client already initialized and healthy")
             return True
-        else:
-            logger.error("Weaviate is not ready")
+        
+        try:
+            # Close any existing connection first
             if weaviate_client:
-                weaviate_client.close()
-                weaviate_client = None
+                try:
+                    weaviate_client.close()
+                    logger.debug("Closed existing Weaviate connection")
+                except Exception as e:
+                    logger.warning(f"Error closing existing Weaviate connection: {e}")
+                finally:
+                    weaviate_client = None
+                    _client_initialized = False
+            
+            # Create new connection
+            logger.info("Initializing new Weaviate connection...")
+            weaviate_client = weaviate.connect_to_local()
+            
+            # Health check
+            if weaviate_client.is_ready():
+                version_info = weaviate_client.get_meta()
+                logger.info(f"✅ Connected to Weaviate version: {version_info.get('version', 'Unknown')}")
+                _client_initialized = True
+                return True
+            else:
+                logger.error("❌ Weaviate is not ready")
+                _cleanup_client()
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Weaviate connection failed: {e}")
+            _cleanup_client()
             return False
-    except Exception as e:
-        logger.error(f"Weaviate connection failed: {e}")
-        if weaviate_client:
-            try:
-                weaviate_client.close()
-            except:
-                pass
-            weaviate_client = None
+
+def _is_client_healthy() -> bool:
+    """Check if the Weaviate client is healthy and responsive."""
+    global weaviate_client
+    if not weaviate_client:
         return False
+    
+    try:
+        return weaviate_client.is_ready()
+    except Exception as e:
+        logger.warning(f"Weaviate health check failed: {e}")
+        return False
+
+def _cleanup_client():
+    """Internal cleanup function for the client."""
+    global weaviate_client, _client_initialized
+    if weaviate_client:
+        try:
+            weaviate_client.close()
+        except Exception as e:
+            logger.warning(f"Error during client cleanup: {e}")
+        finally:
+            weaviate_client = None
+            _client_initialized = False
 
 def _sanitize_tenant_id(tenant_id: str) -> str:
     """
@@ -314,8 +354,6 @@ def retrieve_document_chunks(
         return []
 
 
-
-
 def store_memory(
     tenant_id: str,
     user_input: str,
@@ -516,19 +554,20 @@ def clear_session_conversations(tenant_id: str, session_id: str) -> dict:
 
 def close_per_tenant_storage() -> None:
     """
-    Properly close the per-tenant storage service.
+    Properly close the per-tenant storage service with thread safety.
     """
-    global weaviate_client
-    if weaviate_client:
-        try:
-            # Force close any remaining connections
-            weaviate_client.close()
-            # Clear the client reference
-            weaviate_client = None
-            logger.info("Per-tenant storage service closed.")
-        except Exception as e:
-            logger.error(f"Error during per-tenant storage shutdown: {e}")
-            # Ensure client is cleared even if close fails
-            weaviate_client = None
-    else:
-        logger.info("Per-tenant storage service was not initialized.") 
+    global weaviate_client, _client_initialized
+    
+    with _client_lock:
+        if weaviate_client:
+            try:
+                logger.info("Closing per-tenant storage service...")
+                weaviate_client.close()
+                logger.info("✅ Per-tenant storage service closed successfully.")
+            except Exception as e:
+                logger.error(f"❌ Error during per-tenant storage shutdown: {e}")
+            finally:
+                weaviate_client = None
+                _client_initialized = False
+        else:
+            logger.info("Per-tenant storage service was not initialized.") 
