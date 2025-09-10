@@ -169,12 +169,25 @@ def create_rag_flow():
         role = state.get("role", "")
 
         if langfuse:
-            with langfuse.start_as_current_span(name="MemoryRetrieval") as span:
-                span.update(input={
+            with langfuse.start_as_current_span(
+                name="MemoryRetrieval",
+                metadata={
+                    "component": "memory_system",
+                    "operation": "retrieve_user_memories_and_preferences",
                     "tenant_id": tenant_id,
                     "session_id": session_id,
                     "module": module,
                     "role": role
+                }
+            ) as span:
+                # Add user_id to the current trace for user tracking
+                langfuse.update_current_trace(user_id=session_id)
+                span.update(input={
+                    "tenant_id": tenant_id,
+                    "session_id": session_id,
+                    "module": module,
+                    "role": role,
+                    "operation": "retrieve_memories_and_preferences"
                 })
                 try:
                     memories, user_preferences = _retrieve_memories_and_preferences(
@@ -187,9 +200,13 @@ def create_rag_flow():
                         "memory_count": len(memories),
                         "memories": memories[:3] if memories else [],  # First 3 for context
                         "user_preferences": user_preferences,
-                        "session_id": session_id,
-                        "module": module,
-                        "role": role
+                        "total_memory_length": sum(len(mem) for mem in memories),
+                        "status": "success"
+                    })
+                    span.update(metadata={
+                        "memory_retrieval_success": True,
+                        "memory_count": len(memories),
+                        "has_user_preferences": bool(user_preferences)
                     })
                 except Exception as e:
                     span.update(exception=e)
@@ -212,6 +229,7 @@ def create_rag_flow():
 
     def retriever_node(state: dict) -> dict:
         tenant_id = state.get("tenant_id", "")
+        session_id = state.get("session_id", "")
         module = state.get("module") or DEFAULT_MODULE
         role = state.get("role", "")
         user_input = state["input"]
@@ -324,13 +342,26 @@ def create_rag_flow():
                 return chunks[0][:max_chars] + "..." if chunks else "", video_segments
 
         if langfuse:
-            with langfuse.start_as_current_span(name="VectorRetrieval") as span:
+            with langfuse.start_as_current_span(
+                name="VectorRetrieval",
+                metadata={
+                    "component": "vector_search",
+                    "operation": "retrieve_document_chunks",
+                    "tenant_id": tenant_id,
+                    "module": module,
+                    "role": role
+                }
+            ) as span:
+                # Add user_id to the current trace for user tracking
+                langfuse.update_current_trace(user_id=session_id)
                 span.update(input={
                     "query": user_input,
                     "tenant_id": tenant_id,
                     "module": module,
                     "role": role,
-                    "top_k": MAX_CHUNKS_PER_QUERY
+                    "top_k": MAX_CHUNKS_PER_QUERY,
+                    "query_length": len(user_input),
+                    "operation": "vector_search"
                 })
                 try:
                     result = retrieve_document_chunks(
@@ -338,7 +369,8 @@ def create_rag_flow():
                         query=user_input,
                         module=module,
                         role=role,
-                        top_k=MAX_CHUNKS_PER_QUERY
+                        top_k=MAX_CHUNKS_PER_QUERY,
+                        session_id=session_id
                     )
                     
                     context_summary, video_segments = preprocess_context(result)
@@ -378,7 +410,8 @@ def create_rag_flow():
                     query=user_input,
                     module=module,
                     role=role,
-                    top_k=MAX_CHUNKS_PER_QUERY
+                    top_k=MAX_CHUNKS_PER_QUERY,
+                    session_id=session_id
                 )
                 
                 context_summary, video_segments = preprocess_context(result)
@@ -395,7 +428,19 @@ def create_rag_flow():
     def llm_node(state: dict) -> dict:
         prompt = build_prompt(state, state["input"])
         if langfuse:
-            with langfuse.start_as_current_span(name="LLMGeneration") as span:
+            with langfuse.start_as_current_span(
+                name="LLMGeneration",
+                metadata={
+                    "component": "llm_service",
+                    "operation": "generate_response",
+                    "tenant_id": state["tenant_id"],
+                    "session_id": state["session_id"],
+                    "module": state["module"],
+                    "role": state["role"]
+                }
+            ) as span:
+                # Add user_id to the current trace for user tracking
+                langfuse.update_current_trace(user_id=state["session_id"])
                 span.update(input={
                     "prompt_length": len(prompt),
                     "prompt_preview": prompt[:500] + "..." if len(prompt) > 500 else prompt,
@@ -403,11 +448,14 @@ def create_rag_flow():
                     "tenant_id": state["tenant_id"],
                     "session_id": state["session_id"],
                     "module": state["module"],
+                    "role": state["role"],
                     "memory_count": len(state.get("memories", [])),
-                    "context_length": len(state.get("context", ""))
+                    "context_length": len(state.get("context", "")),
+                    "user_preferences_length": len(state.get("user_preferences", "")),
+                    "operation": "llm_generation"
                 })
                 try:
-                    full_response = generate_llm_response(prompt, span)
+                    full_response = generate_llm_response(prompt, span, state["session_id"])
                     if full_response:
                         span.update(output={
                             "status": "completed",
@@ -458,9 +506,13 @@ async def query_rag(
     validated_request: SanitizedQueryRequest = Depends(validate_query_request),
     fastapi_request: Request = None
 ):
+    # Get Langfuse client for top-level tracing
+    langfuse = get_langfuse_client()
+    
     # Check rate limit after validation
     if fastapi_request:
         check_rate_limit(fastapi_request, validated_request.tenant_id, validated_request.session_id)
+    
     # Use validated and sanitized data
     state = {
         "input": validated_request.input,
@@ -469,6 +521,8 @@ async def query_rag(
         "module": validated_request.module or DEFAULT_MODULE,
         "role": validated_request.role
     }
+    
+    # Execute the RAG flow
     state = rag_flow_executor.invoke(state)
     full_response = state.get("llm_response", "[ERROR: No LLM response]")
     
@@ -519,6 +573,7 @@ async def health_check():
 async def get_metrics():
     """Get application metrics."""
     return metrics_middleware.get_metrics()
+
 
 @app.get("/cache/stats")
 async def get_cache_stats():

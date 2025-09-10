@@ -195,7 +195,8 @@ def store_document_chunks(
     chunks: List[Dict],
     module: Optional[str] = None,
     role: Optional[str] = None,
-    video_url: Optional[str] = None  # NEW: Optional video URL parameter
+    video_url: Optional[str] = None,  # NEW: Optional video URL parameter
+    session_id: Optional[str] = None
 ) -> bool:
     """
     Store document chunks in tenant-specific vector collection.
@@ -224,7 +225,7 @@ def store_document_chunks(
             # Debug: Log the content being processed (minimal logging)
             logger.debug(f"Processing chunk with content length: {len(content) if content else 0}")
             
-            vector = get_openai_embedding(content)
+            vector = get_openai_embedding(content, session_id=session_id)
             
             if not vector:
                 logger.warning(f"Failed to get embedding for chunk, skipping")
@@ -268,7 +269,8 @@ def retrieve_document_chunks(
     query: str,
     module: Optional[str] = None,
     role: Optional[str] = None,
-    top_k: int = 3
+    top_k: int = 3,
+    session_id: Optional[str] = None
 ) -> List[str]:
     """
     Retrieve document chunks from tenant-specific vector collection.
@@ -290,7 +292,7 @@ def retrieve_document_chunks(
         from utils.embeddings import get_openai_embedding
         
         # Get embedding for the query
-        query_vector = get_openai_embedding(query)
+        query_vector = get_openai_embedding(query, session_id=session_id)
         if not query_vector:
             logger.error("Failed to generate embedding for query")
             return []

@@ -41,17 +41,22 @@ def _get_openai_client() -> Optional[openai.AzureOpenAI]:
     
     return _openai_client
 
-def get_openai_embedding(text: str, use_cache: bool = True) -> Optional[List[float]]:
+def get_openai_embedding(text: str, use_cache: bool = True, session_id: str = None) -> Optional[List[float]]:
     """
-    Get OpenAI embedding for the given text using Azure OpenAI with intelligent caching.
+    Get OpenAI embedding for the given text using Azure OpenAI with intelligent caching and cost tracking.
     
     Args:
         text: The text to embed
         use_cache: Whether to use caching (default: True)
+        session_id: Session ID for user tracking (optional)
         
     Returns:
         List of floats representing the embedding, or None if failed
     """
+    from tracing import get_langfuse_client
+    
+    langfuse = get_langfuse_client()
+    
     try:
         # Validate input text
         if not text or not text.strip():
@@ -96,6 +101,45 @@ def get_openai_embedding(text: str, use_cache: bool = True) -> Optional[List[flo
         
         embedding = response.data[0].embedding
         
+        # Extract usage information for cost tracking
+        usage_info = {}
+        if hasattr(response, 'usage') and response.usage:
+            usage_info = {
+                "input_tokens": getattr(response.usage, 'prompt_tokens', 0),
+                "total_tokens": getattr(response.usage, 'total_tokens', 0)
+            }
+        
+        # Calculate embedding cost
+        cost_info = {}
+        if usage_info:
+            cost_info = calculate_embedding_cost(model_name, usage_info['total_tokens'])
+        
+        # Create Langfuse generation for Model Costs dashboard using correct API
+        if langfuse and usage_info:
+            try:
+                with langfuse.start_as_current_generation(
+                    name="azure-openai-embedding",
+                    model=model_name,
+                    input=cleaned_text[:200] + "..." if len(cleaned_text) > 200 else cleaned_text
+                ) as generation:
+                    # Add user_id to the current trace for user tracking
+                    langfuse.update_current_trace(user_id=session_id or "session_user")
+                    generation.update(
+                        output={"embedding_dimension": len(embedding) if embedding else 0},
+                        usage_details={
+                            "input": usage_info["input_tokens"],
+                            "total": usage_info["total_tokens"]
+                        },
+                        cost_details={
+                            "input": cost_info["total_cost"],
+                            "total": cost_info["total_cost"]
+                        }
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to create embedding generation for cost tracking: {e}")
+        
+        # Remove cost logging - costs will be visible in Langfuse dashboard
+        
         # Store in cache if enabled
         if use_cache and embedding:
             try:
@@ -139,4 +183,45 @@ def shutdown_embedding_cache():
         shutdown_embedding_cache()
         logger.info("✅ Embedding cache shutdown")
     except Exception as e:
-        logger.error(f"Failed to shutdown cache: {e}") 
+        logger.error(f"Failed to shutdown cache: {e}")
+
+
+def calculate_embedding_cost(model: str, input_tokens: int) -> dict:
+    """
+    Calculate cost for Azure OpenAI embedding models.
+    Pricing as of 2024 (per 1K tokens):
+    - text-embedding-ada-002: $0.0001
+    - text-embedding-3-small: $0.00002
+    - text-embedding-3-large: $0.00013
+    """
+    # Azure OpenAI embedding pricing per 1K tokens (as of 2024)
+    pricing = {
+        "text-embedding-ada-002": 0.0001,
+        "text-embedding-3-small": 0.00002,
+        "text-embedding-3-large": 0.00013,
+    }
+    
+    # Normalize model name for lookup
+    model_key = model.lower().replace("-", "").replace("_", "")
+    
+    # Find matching pricing (handle variations in model names)
+    model_pricing = None
+    for key, price in pricing.items():
+        if key in model_key or model_key in key:
+            model_pricing = price
+            break
+    
+    # Default to ada-002 pricing if model not found
+    if not model_pricing:
+        logger.warning(f"Unknown embedding model {model}, using ada-002 pricing")
+        model_pricing = pricing["text-embedding-ada-002"]
+    
+    # Calculate cost
+    total_cost = (input_tokens / 1000) * model_pricing
+    
+    return {
+        "total_cost": round(total_cost, 6),
+        "model": model,
+        "pricing_per_1k_tokens": model_pricing,
+        "input_tokens": input_tokens
+    } 

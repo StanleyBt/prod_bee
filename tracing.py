@@ -20,6 +20,7 @@ def get_langfuse_client():
     if _langfuse_client is not None:
         return _langfuse_client
     try:
+        # Initialize with basic configuration
         _langfuse_client = get_client()
         logger.info("Langfuse client initialized")
         return _langfuse_client
