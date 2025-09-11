@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class SanitizedQueryRequest(BaseModel):
     """Sanitized and validated query request."""
-    input: str = Field(..., min_length=1, max_length=2000, description="User query")
+    input: str = Field(..., min_length=1, max_length=1000, description="User query")
     tenant_id: str = Field(..., min_length=1, max_length=50, description="Tenant ID")
     session_id: str = Field(..., min_length=1, max_length=100, description="Session ID")
     module: Optional[str] = Field(None, min_length=1, max_length=50, description="Module name")
@@ -96,7 +96,7 @@ class SanitizedClearRequest(BaseModel):
             raise ValueError("Invalid session ID format")
         return v
 
-def sanitize_text(text: str, max_length: int = 2000) -> str:
+def sanitize_text(text: str, max_length: int = 1000) -> str:
     """Sanitize text input to prevent injection attacks."""
     if not text:
         return ""

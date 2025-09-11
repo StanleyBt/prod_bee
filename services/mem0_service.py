@@ -159,8 +159,11 @@ def get_user_context(
     
     try:
         mem0_user_id = _get_user_id(tenant_id, user_id, session_id, module, role)
+        logger.debug(f"Attempting to retrieve memories for {mem0_user_id}")
         result = mem0_client.get_all(user_id=mem0_user_id)
+        
         if not result or not result.get('results'):
+            logger.debug(f"No memories found for {mem0_user_id}")
             return ""
         
         # Extract user preferences and patterns from their queries
@@ -174,9 +177,15 @@ def get_user_context(
                 query_part = memory_text.replace('User asked about: ', '')
                 context_parts.append(query_part)
         
+        logger.debug(f"Retrieved {len(context_parts)} context parts for {mem0_user_id}")
         return " ".join(context_parts)
     except Exception as e:
         logger.error(f"Failed to retrieve user context: {e}")
+        # Log additional details for debugging JSON issues
+        if "JSON" in str(e) or "json" in str(e):
+            logger.error(f"JSON parsing error in Mem0 get_all for user {mem0_user_id}: {e}")
+            logger.error(f"Error type: {type(e)}")
+            logger.error(f"Error details: {str(e)}")
         return ""
 
 def store_user_memory(
@@ -200,19 +209,31 @@ def store_user_memory(
         
         # Store user interaction pattern for preference learning
         # Focus on what the user is asking about, not the bot's response
-        memory_text = f"User asked about: {user_input}"
+        # Sanitize input to prevent JSON parsing issues
+        sanitized_input = user_input.replace('"', "'").replace('\n', ' ').replace('\r', ' ').strip()
+        memory_text = f"User asked about: {sanitized_input}"
         
-        # Store in Mem0
-        result = mem0_client.add(
-            memory_text,
-            user_id=mem0_user_id
-        )
-        
-        if result:
-            logger.info(f"Stored user memory for {mem0_user_id}")
-            return True
-        else:
-            logger.warning(f"Mem0 storage returned empty result for {mem0_user_id}")
+        # Store in Mem0 with better error handling
+        try:
+            logger.debug(f"Attempting to store memory for {mem0_user_id}: '{memory_text}'")
+            result = mem0_client.add(
+                memory_text,
+                user_id=mem0_user_id
+            )
+            
+            if result:
+                logger.info(f"Stored user memory for {mem0_user_id}")
+                return True
+            else:
+                logger.warning(f"Mem0 storage returned empty result for {mem0_user_id}")
+                return False
+                
+        except Exception as mem0_error:
+            logger.error(f"Mem0 add operation failed for {mem0_user_id}: {mem0_error}")
+            # Log the memory text that caused the issue for debugging
+            logger.error(f"Problematic memory text: '{memory_text}'")
+            logger.error(f"Memory text length: {len(memory_text)}")
+            logger.error(f"Memory text type: {type(memory_text)}")
             return False
             
     except Exception as e:

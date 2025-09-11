@@ -211,6 +211,10 @@ def calculate_embedding_cost(model: str, input_tokens: int) -> dict:
             model_pricing = price
             break
     
+    # Handle direct model name matches
+    if not model_pricing and model in pricing:
+        model_pricing = pricing[model]
+    
     # Default to ada-002 pricing if model not found
     if not model_pricing:
         logger.warning(f"Unknown embedding model {model}, using ada-002 pricing")

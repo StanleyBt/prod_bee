@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RateLimitConfig:
     """Configuration for rate limiting."""
-    requests_per_minute: int = 60
-    requests_per_hour: int = 1000
-    requests_per_day: int = 10000
-    burst_limit: int = 10  # Allow burst of requests
+    requests_per_minute: int = 20  # Industry standard: ~1 request per 3 seconds
+    requests_per_hour: int = 300   # Industry standard: 5 requests per minute
+    requests_per_day: int = 2000   # Industry standard: ~83 requests per hour
+    burst_limit: int = 5  # Allow small burst of requests
 
 class RateLimiter:
     """Rate limiter using sliding window algorithm."""
@@ -108,10 +108,10 @@ def get_rate_limit_key(tenant_id: str, user_id: str, endpoint: str) -> str:
 def create_rate_limiter() -> RateLimiter:
     """Create a rate limiter with default configuration."""
     config = RateLimitConfig(
-        requests_per_minute=60,
-        requests_per_hour=1000,
-        requests_per_day=10000,
-        burst_limit=10
+        requests_per_minute=20,  # Industry standard: ~1 request per 3 seconds
+        requests_per_hour=300,   # Industry standard: 5 requests per minute
+        requests_per_day=2000,   # Industry standard: ~83 requests per hour
+        burst_limit=5
     )
     return RateLimiter(config)
 

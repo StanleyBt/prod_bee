@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict
 from fastapi import FastAPI, Query, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -233,6 +233,54 @@ def create_rag_flow():
         module = state.get("module") or DEFAULT_MODULE
         role = state.get("role", "")
         user_input = state["input"]
+        memories = state.get("memories", [])
+        
+        # Build contextual query using conversation history
+        def build_contextual_query(current_input: str, memories: List[Dict]) -> str:
+            """
+            Build an enhanced query that includes conversation context
+            to improve document retrieval accuracy.
+            """
+            if not memories:
+                return current_input
+            
+            # Skip enhancement for very short queries (likely greetings or simple responses)
+            if len(current_input.split()) <= 2:
+                logger.info(f"Skipping enhancement for short query: '{current_input}'")
+                return current_input
+            
+            # Extract key terms from the most recent conversation
+            recent_memory = memories[0] if memories else {}
+            user_question = recent_memory.get('user', '')
+            bot_response = recent_memory.get('bot', '')
+            
+            # Extract meaningful terms from the conversation (non-generic words)
+            import re
+            
+            # Combine user question and bot response for analysis
+            conversation_text = f"{user_question} {bot_response}".lower()
+            
+            # Basic stop words (minimal set)
+            stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'what', 'how', 'when', 'where', 'why', 'who', 'which', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'her', 'its', 'our', 'their'}
+            
+            # Extract words that are likely to be important context
+            words = re.findall(r'\b[a-zA-Z]{3,}\b', conversation_text)
+            meaningful_terms = [word for word in words if word not in stop_words and len(word) > 2]
+            
+            # Take the most relevant terms (limit to avoid too long queries)
+            key_terms = list(dict.fromkeys(meaningful_terms))[:3]  # Limit to 3 terms for better focus
+            
+            # Only enhance if we have meaningful terms
+            if key_terms and len(key_terms) >= 1:
+                contextual_query = f"{' '.join(key_terms)} {current_input}"
+                logger.info(f"Enhanced query: '{current_input}' -> '{contextual_query}'")
+                return contextual_query
+            
+            logger.info(f"No meaningful context found for: '{current_input}'")
+            return current_input
+        
+        # Use enhanced query for better document retrieval
+        enhanced_query = build_contextual_query(user_input, memories)
 
         def _get_video_segment_from_mapping(video_mapping: dict, document_filename: str, user_query: str) -> Optional[dict]:
             """
@@ -356,17 +404,19 @@ def create_rag_flow():
                 langfuse.update_current_trace(user_id=session_id)
                 span.update(input={
                     "query": user_input,
+                    "enhanced_query": enhanced_query,
                     "tenant_id": tenant_id,
                     "module": module,
                     "role": role,
                     "top_k": MAX_CHUNKS_PER_QUERY,
                     "query_length": len(user_input),
+                    "enhanced_query_length": len(enhanced_query),
                     "operation": "vector_search"
                 })
                 try:
                     result = retrieve_document_chunks(
                         tenant_id=tenant_id,
-                        query=user_input,
+                        query=enhanced_query,
                         module=module,
                         role=role,
                         top_k=MAX_CHUNKS_PER_QUERY,
@@ -378,7 +428,10 @@ def create_rag_flow():
                     state["video_segments"] = video_segments  # NEW: Store video segments in state
                     
                     # Log retrieval summary
-                    logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars, {len(video_segments)} video segments")
+                    if enhanced_query != user_input:
+                        logger.info(f"Retrieved {len(result) if result else 0} chunks for enhanced query '{enhanced_query}' (original: '{user_input}'): {len(context_summary)} chars, {len(video_segments)} video segments")
+                    else:
+                        logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars, {len(video_segments)} video segments")
                     
                     # Enhanced output with detailed retrieval info
                     span.update(output={
@@ -407,7 +460,7 @@ def create_rag_flow():
             try:
                 result = retrieve_document_chunks(
                     tenant_id=tenant_id,
-                    query=user_input,
+                    query=enhanced_query,
                     module=module,
                     role=role,
                     top_k=MAX_CHUNKS_PER_QUERY,
@@ -419,7 +472,10 @@ def create_rag_flow():
                 state["video_segments"] = video_segments  # NEW: Store video segments in state
                 
                 # Log retrieval summary
-                logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars, {len(video_segments)} video segments")
+                if enhanced_query != user_input:
+                    logger.info(f"Retrieved {len(result) if result else 0} chunks for enhanced query '{enhanced_query}' (original: '{user_input}'): {len(context_summary)} chars, {len(video_segments)} video segments")
+                else:
+                    logger.info(f"Retrieved {len(result) if result else 0} chunks for '{user_input}': {len(context_summary)} chars, {len(video_segments)} video segments")
             except Exception:
                 state["context"] = "Retrieval error"
                 state["video_segments"] = []  # NEW: Empty video segments on error
